@@ -1,0 +1,1 @@
+Baseline project structure completed on 2026-08-07. Optimization changes should not be made on main.
