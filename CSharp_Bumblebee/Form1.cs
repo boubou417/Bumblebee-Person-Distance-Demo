@@ -124,15 +124,47 @@ namespace CSharp_Bumblebee
                         DnnInvoke.NMSBoxes(bv,sv,ConfidenceThreshold,NmsThreshold,indices);
                         foreach(int index in indices.ToArray())
                         {
-                            PosePerson person=people[index]; DrawSkeleton(mat,person.Keypoints);
-                            Point center=new Point(person.Box.X+person.Box.Width/2,person.Box.Y+person.Box.Height/2);
-                            double distance=ComputeZvalue(person.Box,disparityData,mat.Width,mat.Height);
+                            PosePerson person=people[index];
+                            DrawSkeleton(mat,person.Keypoints);
+
+                            Point center=GetTorsoCenter(person,mat.Width,mat.Height);
+                            double distance=ComputeZvalue(center,person.Box,disparityData,mat.Width,mat.Height);
+
                             CvInvoke.Circle(mat,center,circleSize+1,new MCvScalar(0,255,255),-1);
                             if(distance>0)CvInvoke.PutText(mat,distance.ToString("F2")+"m",new Point(center.X+8,center.Y-8),FontFace.HersheyTriplex,fontSize,new MCvScalar(255,255,255),fontThick);
                         }
                     }
                 }
             }
+        }
+
+        private Point GetTorsoCenter(PosePerson person,int imgWidth,int imgHeight)
+        {
+            PoseKeypoint leftShoulder=person.Keypoints[5],rightShoulder=person.Keypoints[6];
+            PoseKeypoint leftHip=person.Keypoints[11],rightHip=person.Keypoints[12];
+            bool ls=IsValidKeypoint(leftShoulder,imgWidth,imgHeight),rs=IsValidKeypoint(rightShoulder,imgWidth,imgHeight);
+            bool lh=IsValidKeypoint(leftHip,imgWidth,imgHeight),rh=IsValidKeypoint(rightHip,imgWidth,imgHeight);
+
+            if(ls&&rs&&lh&&rh)
+            {
+                return ClampPoint(new Point(
+                    (int)Math.Round((leftShoulder.X+rightShoulder.X+leftHip.X+rightHip.X)/4.0),
+                    (int)Math.Round((leftShoulder.Y+rightShoulder.Y+leftHip.Y+rightHip.Y)/4.0)),imgWidth,imgHeight);
+            }
+
+            if(ls&&rs)
+            {
+                float shoulderX=(leftShoulder.X+rightShoulder.X)*0.5f;
+                float shoulderY=(leftShoulder.Y+rightShoulder.Y)*0.5f;
+                return ClampPoint(new Point((int)Math.Round(shoulderX),(int)Math.Round(shoulderY+person.Box.Height*0.18f)),imgWidth,imgHeight);
+            }
+
+            return ClampPoint(new Point(person.Box.X+person.Box.Width/2,person.Box.Y+person.Box.Height/2),imgWidth,imgHeight);
+        }
+
+        private Point ClampPoint(Point point,int width,int height)
+        {
+            return new Point(Math.Max(0,Math.Min(width-1,point.X)),Math.Max(0,Math.Min(height-1,point.Y)));
         }
 
         private void DrawSkeleton(Mat mat, PoseKeypoint[] keypoints)
@@ -142,7 +174,26 @@ namespace CSharp_Bumblebee
         }
         private bool IsValidKeypoint(PoseKeypoint p,int w,int h){return p.Confidence>=KeypointThreshold&&p.X>=0&&p.X<w&&p.Y>=0&&p.Y<h;}
         private Rectangle ClampRect(Rectangle r,int width,int height){int l=Math.Max(0,r.Left),t=Math.Max(0,r.Top),rr=Math.Min(width,r.Right),bb=Math.Min(height,r.Bottom);return rr>l&&bb>t?Rectangle.FromLTRB(l,t,rr,bb):Rectangle.Empty;}
-        private unsafe double ComputeZvalue(Rectangle personRect,ushort* disparityData,int imgWidth,int imgHeight){Rectangle person=ClampRect(personRect,imgWidth,imgHeight);if(person.IsEmpty)return 0;int rw=Math.Max(1,(int)(person.Width*.45)),rh=Math.Max(1,(int)(person.Height*.45));int left=person.X+(person.Width-rw)/2,top=person.Y+(int)(person.Height*.25);Rectangle roi=ClampRect(new Rectangle(left,top,rw,rh),imgWidth,imgHeight);List<double> distances=new List<double>(Math.Max(32,roi.Width*roi.Height/16));for(int y=roi.Top;y<roi.Bottom;y+=2)for(int x=roi.Left;x<roi.Right;x+=2){ushort raw=disparityData[y*imgWidth+x];if(raw==0)continue;if(stereoCameraParameters.invalidDataFlag&&Math.Abs(raw-stereoCameraParameters.invalidDataValue)<.5)continue;double disp=raw*stereoCameraParameters.disparityScaleFactor+stereoCameraParameters.coordinateOffset;if(disp<=0)continue;double distance=stereoCameraParameters.focalLength*stereoCameraParameters.baseline/disp;if(distance>0&&distance<100000)distances.Add(distance);}return GetMedianInPlace(distances);}
+
+        private unsafe double ComputeZvalue(Point center,Rectangle personRect,ushort* disparityData,int imgWidth,int imgHeight)
+        {
+            Rectangle person=ClampRect(personRect,imgWidth,imgHeight);if(person.IsEmpty)return 0;
+            int rw=Math.Max(12,(int)(person.Width*.22));
+            int rh=Math.Max(12,(int)(person.Height*.18));
+            Rectangle roi=ClampRect(new Rectangle(center.X-rw/2,center.Y-rh/2,rw,rh),imgWidth,imgHeight);
+            if(roi.IsEmpty)return 0;
+            List<double> distances=new List<double>(Math.Max(32,roi.Width*roi.Height/8));
+            for(int y=roi.Top;y<roi.Bottom;y+=2)for(int x=roi.Left;x<roi.Right;x+=2)
+            {
+                ushort raw=disparityData[y*imgWidth+x];if(raw==0)continue;
+                if(stereoCameraParameters.invalidDataFlag&&Math.Abs(raw-stereoCameraParameters.invalidDataValue)<.5)continue;
+                double disp=raw*stereoCameraParameters.disparityScaleFactor+stereoCameraParameters.coordinateOffset;if(disp<=0)continue;
+                double distance=stereoCameraParameters.focalLength*stereoCameraParameters.baseline/disp;
+                if(distance>0&&distance<100000)distances.Add(distance);
+            }
+            return GetMedianInPlace(distances);
+        }
+
         private double GetMedianInPlace(List<double> values){if(values==null||values.Count==0)return 0;values.Sort();int m=values.Count/2;return values.Count%2==0?(values[m-1]+values[m])*.5:values[m];}
         private void InvokeDisplay(Bitmap bmp,int imgWidth,int imgHeight){Bitmap old=pBox.Image as Bitmap;pBox.Image=bmp;old?.Dispose();}
         private void Form1_FormClosing(object sender,FormClosingEventArgs e){capImg=false;try{if(started)cam.EndAcquisition();}catch{}try{if(connected)cam.DeInit();}catch{}cam?.Dispose();}
