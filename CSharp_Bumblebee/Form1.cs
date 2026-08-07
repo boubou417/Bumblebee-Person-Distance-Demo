@@ -8,6 +8,7 @@ using System.Windows.Forms;
 using Emgu.CV;
 using Emgu.CV.CvEnum;
 using Emgu.CV.Dnn;
+using Emgu.CV.Structure;
 using Emgu.CV.Util;
 using SpinnakerNET;
 using SpinnakerNET.GenApi;
@@ -148,7 +149,7 @@ namespace CSharp_Bumblebee
         private void backgroundWorker1_RunWorkerCompleted(object sender,RunWorkerCompletedEventArgs e){}
     }
 
-    public class PosePerson { public Rectangle Box; public PoseKeypoint[] Keypoints; }
-    public struct PoseKeypoint { public float X; public float Y; public float Confidence; }
-    public class StereoCameraParameters { public float coordinateOffset,baseline,focalLength,principalPointU,principalPointV,disparityScaleFactor;public bool invalidDataFlag;public float invalidDataValue; }
+    public class StereoCameraParameters { public float coordinateOffset,baseline,focalLength,principalPointU,principalPointV,disparityScaleFactor; public bool invalidDataFlag; public float invalidDataValue; }
+    internal struct PoseKeypoint { public float X,Y,Confidence; }
+    internal class PosePerson { public Rectangle Box; public PoseKeypoint[] Keypoints; }
 }
