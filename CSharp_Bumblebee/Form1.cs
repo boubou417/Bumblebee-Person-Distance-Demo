@@ -36,7 +36,10 @@ namespace CSharp_Bumblebee
         private const int PoseOutputChannels = 56;
         private const int KeypointCount = 17;
 
-        // Distance smoothing. A lower alpha is steadier; a higher alpha responds faster.
+        // CPU-only optimization: run YOLO on every second camera frame.
+        // Intermediate frames reuse the latest pose while disparity distance is still refreshed.
+        private const int PoseInferenceInterval = 2;
+
         private const double DistanceEmaAlpha = 0.25;
         private const double DistanceJumpThresholdMeters = 0.75;
         private const int DistanceTrackMaxMissedFrames = 8;
@@ -69,7 +72,9 @@ namespace CSharp_Bumblebee
         private int fontThick;
 
         private readonly List<DistanceTrack> distanceTracks = new List<DistanceTrack>();
+        private readonly List<PosePerson> cachedPosePeople = new List<PosePerson>();
         private int nextDistanceTrackId = 1;
+        private int poseFrameCounter;
 
         public Form1()
         {
@@ -280,7 +285,9 @@ namespace CSharp_Bumblebee
             if (!started)
             {
                 distanceTracks.Clear();
+                cachedPosePeople.Clear();
                 nextDistanceTrackId = 1;
+                poseFrameCounter = 0;
                 capImg = true;
                 capImgComplete = false;
                 cam.BeginAcquisition();
@@ -359,10 +366,21 @@ namespace CSharp_Bumblebee
                     using (Mat rgb = new Mat(h, w, DepthType.Cv8U, 3, rectifiedImg.DataPtr, 0))
                     {
                         CvInvoke.CvtColor(rgb, bgr, ColorConversion.Rgb2Bgr);
+
                         unsafe
                         {
-                            PoseDetect(net, (ushort*)disparityImg.NativeData, bgr);
+                            bool runInference = cachedPosePeople.Count == 0 ||
+                                                (poseFrameCounter % PoseInferenceInterval) == 0;
+
+                            if (runInference)
+                                DetectPose(net, bgr);
+
+                            DrawCachedPoseAndDistance(
+                                (ushort*)disparityImg.NativeData,
+                                bgr);
                         }
+
+                        poseFrameCounter++;
 
                         using (Bitmap bmp = new Bitmap(w, h, stride, PixelFormat.Format24bppRgb, bgr.DataPointer))
                         {
@@ -377,6 +395,7 @@ namespace CSharp_Bumblebee
                 rectifiedImg.Dispose();
                 disparityImg.Dispose();
                 distanceTracks.Clear();
+                cachedPosePeople.Clear();
                 capImgComplete = true;
 
                 BeginInvoke(new Action(() =>
@@ -410,7 +429,7 @@ namespace CSharp_Bumblebee
             return dst;
         }
 
-        private unsafe void PoseDetect(Net net, ushort* disparityData, Mat mat)
+        private unsafe void DetectPose(Net net, Mat mat)
         {
             float scale;
             int padX;
@@ -443,7 +462,11 @@ namespace CSharp_Bumblebee
                         float cy = (data[1] - padY) / scale;
                         float bw = data[2] / scale;
                         float bh = data[3] / scale;
-                        Rectangle box = ClampRect(new Rectangle((int)(cx - bw / 2), (int)(cy - bh / 2), (int)bw, (int)bh), mat.Width, mat.Height);
+                        Rectangle box = ClampRect(
+                            new Rectangle((int)(cx - bw / 2), (int)(cy - bh / 2), (int)bw, (int)bh),
+                            mat.Width,
+                            mat.Height);
+
                         if (box.IsEmpty)
                             continue;
 
@@ -469,46 +492,54 @@ namespace CSharp_Bumblebee
                         scores.Add(score);
                     }
 
-                    AgeDistanceTracks();
+                    cachedPosePeople.Clear();
                     if (people.Count == 0)
-                    {
-                        RemoveExpiredDistanceTracks();
                         return;
-                    }
 
                     using (VectorOfRect bv = new VectorOfRect(boxes.ToArray()))
                     using (VectorOfFloat sv = new VectorOfFloat(scores.ToArray()))
                     using (VectorOfInt indices = new VectorOfInt())
                     {
                         DnnInvoke.NMSBoxes(bv, sv, ConfidenceThreshold, NmsThreshold, indices);
-
                         foreach (int index in indices.ToArray())
-                        {
-                            PosePerson person = people[index];
-                            DrawSkeleton(mat, person.Keypoints);
-
-                            Point center = GetTorsoCenter(person, mat.Width, mat.Height);
-                            double rawDistance = ComputeZvalue(center, person.Box, disparityData, mat.Width, mat.Height);
-                            double displayDistance = UpdateSmoothedDistance(center, rawDistance);
-
-                            CvInvoke.Circle(mat, center, circleSize + 1, new MCvScalar(0, 255, 255), -1);
-                            if (displayDistance > 0)
-                            {
-                                CvInvoke.PutText(
-                                    mat,
-                                    displayDistance.ToString("F2") + "m",
-                                    new Point(center.X + 8, center.Y - 8),
-                                    FontFace.HersheyTriplex,
-                                    fontSize,
-                                    new MCvScalar(255, 255, 255),
-                                    fontThick);
-                            }
-                        }
+                            cachedPosePeople.Add(people[index]);
                     }
-
-                    RemoveExpiredDistanceTracks();
                 }
             }
+        }
+
+        private unsafe void DrawCachedPoseAndDistance(ushort* disparityData, Mat mat)
+        {
+            AgeDistanceTracks();
+
+            foreach (PosePerson person in cachedPosePeople)
+            {
+                DrawSkeleton(mat, person.Keypoints);
+
+                Point center = GetTorsoCenter(person, mat.Width, mat.Height);
+                double rawDistance = ComputeZvalue(
+                    center,
+                    person.Box,
+                    disparityData,
+                    mat.Width,
+                    mat.Height);
+                double displayDistance = UpdateSmoothedDistance(center, rawDistance);
+
+                CvInvoke.Circle(mat, center, circleSize + 1, new MCvScalar(0, 255, 255), -1);
+                if (displayDistance > 0)
+                {
+                    CvInvoke.PutText(
+                        mat,
+                        displayDistance.ToString("F2") + "m",
+                        new Point(center.X + 8, center.Y - 8),
+                        FontFace.HersheyTriplex,
+                        fontSize,
+                        new MCvScalar(255, 255, 255),
+                        fontThick);
+                }
+            }
+
+            RemoveExpiredDistanceTracks();
         }
 
         private Point GetTorsoCenter(PosePerson person, int imgWidth, int imgHeight)
@@ -559,7 +590,12 @@ namespace CSharp_Bumblebee
                 PoseKeypoint b = keypoints[SkeletonEdges[i, 1]];
                 if (IsValidKeypoint(a, mat.Width, mat.Height) && IsValidKeypoint(b, mat.Width, mat.Height))
                 {
-                    CvInvoke.Line(mat, new Point((int)a.X, (int)a.Y), new Point((int)b.X, (int)b.Y), new MCvScalar(0, 255, 0), 2);
+                    CvInvoke.Line(
+                        mat,
+                        new Point((int)a.X, (int)a.Y),
+                        new Point((int)b.X, (int)b.Y),
+                        new MCvScalar(0, 255, 0),
+                        2);
                 }
             }
 
