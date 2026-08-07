@@ -56,7 +56,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="SpinnakerNET_v140">
-      <HintPath>..\..\..\..\..\..\Program Files\Teledyne\Spinnaker\bin64\vs2015\SpinnakerNET_v140.dll</HintPath>
+      <HintPath>bin\x64\Libraries\SpinnakerNET_v140.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
