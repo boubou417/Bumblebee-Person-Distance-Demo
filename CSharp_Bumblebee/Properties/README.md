@@ -1,0 +1,1 @@
+Generated Visual Studio project metadata for the V1.0 baseline.
