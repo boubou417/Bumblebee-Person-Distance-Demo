@@ -15,11 +15,20 @@ namespace CSharp_Bumblebee
         private double displayFps;
         private double poseFps;
         private double frameMs;
-        private double estimatedPoseBudgetMs;
         private double uiPaintMs;
         private double processCpuPercent;
         private TimeSpan lastProcessCpuTime;
         private DateTime lastCpuSampleTime;
+
+        // Measured pipeline timings. These are updated from the capture worker.
+        private readonly object profilingLock = new object();
+        private double captureMs;
+        private double copyMs;
+        private double convertMs;
+        private double inferenceMs;
+        private double posePostMs;
+        private double distanceRenderMs;
+        private double bitmapQueueMs;
 
         protected override void OnShown(EventArgs e)
         {
@@ -36,7 +45,6 @@ namespace CSharp_Bumblebee
             lastPerformanceFrameCount = poseFrameCounter;
             lastProcessCpuTime = currentProcess.TotalProcessorTime;
             lastCpuSampleTime = DateTime.UtcNow;
-
             pBox.Paint += pBox_PerformancePaint;
 
             performanceTimer = new Timer();
@@ -45,28 +53,32 @@ namespace CSharp_Bumblebee
             performanceTimer.Start();
         }
 
+        private static double SmoothTiming(double oldValue, double newValue)
+        {
+            if (newValue < 0) return oldValue;
+            return oldValue <= 0 ? newValue : oldValue * 0.8 + newValue * 0.2;
+        }
+
+        private void SetCaptureMs(double value) { lock (profilingLock) captureMs = SmoothTiming(captureMs, value); }
+        private void SetCopyMs(double value) { lock (profilingLock) copyMs = SmoothTiming(copyMs, value); }
+        private void SetConvertMs(double value) { lock (profilingLock) convertMs = SmoothTiming(convertMs, value); }
+        private void SetInferenceMs(double value) { lock (profilingLock) inferenceMs = SmoothTiming(inferenceMs, value); }
+        private void SetPosePostMs(double value) { lock (profilingLock) posePostMs = SmoothTiming(posePostMs, value); }
+        private void SetDistanceRenderMs(double value) { lock (profilingLock) distanceRenderMs = SmoothTiming(distanceRenderMs, value); }
+        private void SetBitmapQueueMs(double value) { lock (profilingLock) bitmapQueueMs = SmoothTiming(bitmapQueueMs, value); }
+
         private void performanceTimer_Tick(object sender, EventArgs e)
         {
             double seconds = performanceClock.Elapsed.TotalSeconds;
-            if (seconds <= 0)
-                return;
+            if (seconds <= 0) return;
 
             int currentFrameCount = poseFrameCounter;
             int frameDelta = currentFrameCount - lastPerformanceFrameCount;
-            if (frameDelta < 0)
-                frameDelta = currentFrameCount;
+            if (frameDelta < 0) frameDelta = currentFrameCount;
 
             displayFps = frameDelta / seconds;
-            poseFps = cachedPosePeople.Count > 0
-                ? displayFps / PoseInferenceInterval
-                : displayFps;
-
+            poseFps = cachedPosePeople.Count > 0 ? displayFps / PoseInferenceInterval : displayFps;
             frameMs = displayFps > 0 ? 1000.0 / displayFps : 0;
-
-            // This is the maximum average time budget available to one pose inference
-            // at the current measured cadence. It is intentionally labelled Budget,
-            // not Inference, until Forward() is instrumented directly.
-            estimatedPoseBudgetMs = poseFps > 0 ? 1000.0 / poseFps : 0;
 
             DateTime now = DateTime.UtcNow;
             TimeSpan cpuNow = currentProcess.TotalProcessorTime;
@@ -90,30 +102,38 @@ namespace CSharp_Bumblebee
         {
             uiPaintClock.Restart();
 
+            double c, cp, cv, inf, post, dist, bmp;
+            lock (profilingLock)
+            {
+                c = captureMs; cp = copyMs; cv = convertMs; inf = inferenceMs;
+                post = posePostMs; dist = distanceRenderMs; bmp = bitmapQueueMs;
+            }
+
             string info =
                 "Display FPS : " + displayFps.ToString("F1") + Environment.NewLine +
                 "Frame       : " + frameMs.ToString("F1") + " ms" + Environment.NewLine +
-                "Pose FPS    : " + poseFps.ToString("F1") + Environment.NewLine +
-                "Pose Budget : " + estimatedPoseBudgetMs.ToString("F1") + " ms" + Environment.NewLine +
+                "Capture     : " + c.ToString("F1") + " ms" + Environment.NewLine +
+                "Copy        : " + cp.ToString("F1") + " ms" + Environment.NewLine +
+                "Convert     : " + cv.ToString("F1") + " ms" + Environment.NewLine +
+                "Inference   : " + inf.ToString("F1") + " ms" + Environment.NewLine +
+                "Pose Post   : " + post.ToString("F1") + " ms" + Environment.NewLine +
+                "Dist/Draw   : " + dist.ToString("F1") + " ms" + Environment.NewLine +
+                "BitmapQueue : " + bmp.ToString("F1") + " ms" + Environment.NewLine +
                 "UI Paint    : " + uiPaintMs.ToString("F2") + " ms" + Environment.NewLine +
                 "Process CPU : " + processCpuPercent.ToString("F1") + "%" + Environment.NewLine +
+                "Pose FPS    : " + poseFps.ToString("F1") + Environment.NewLine +
                 "Pose Int.   : " + PoseInferenceInterval + Environment.NewLine +
                 "People      : " + cachedPosePeople.Count;
 
-            using (Font font = new Font("Consolas", 10.0f, FontStyle.Bold))
+            using (Font font = new Font("Consolas", 9.0f, FontStyle.Bold))
             {
                 SizeF textSize = e.Graphics.MeasureString(info, font);
-                const int padding = 8;
+                const int padding = 7;
                 int x = Math.Max(4, pBox.ClientSize.Width - (int)Math.Ceiling(textSize.Width) - padding * 2 - 6);
                 int y = Math.Max(4, pBox.ClientSize.Height - (int)Math.Ceiling(textSize.Height) - padding * 2 - 6);
+                Rectangle background = new Rectangle(x, y, (int)Math.Ceiling(textSize.Width) + padding * 2, (int)Math.Ceiling(textSize.Height) + padding * 2);
 
-                Rectangle background = new Rectangle(
-                    x,
-                    y,
-                    (int)Math.Ceiling(textSize.Width) + padding * 2,
-                    (int)Math.Ceiling(textSize.Height) + padding * 2);
-
-                using (SolidBrush backgroundBrush = new SolidBrush(Color.FromArgb(155, 0, 0, 0)))
+                using (SolidBrush backgroundBrush = new SolidBrush(Color.FromArgb(165, 0, 0, 0)))
                 using (SolidBrush textBrush = new SolidBrush(Color.White))
                 {
                     e.Graphics.FillRectangle(backgroundBrush, background);
@@ -122,17 +142,12 @@ namespace CSharp_Bumblebee
             }
 
             uiPaintClock.Stop();
-            double latestPaintMs = uiPaintClock.Elapsed.TotalMilliseconds;
-            uiPaintMs = uiPaintMs <= 0
-                ? latestPaintMs
-                : uiPaintMs * 0.8 + latestPaintMs * 0.2;
+            uiPaintMs = SmoothTiming(uiPaintMs, uiPaintClock.Elapsed.TotalMilliseconds);
         }
 
         private void DisposePerformanceOverlay()
         {
-            if (performanceTimer == null)
-                return;
-
+            if (performanceTimer == null) return;
             performanceTimer.Stop();
             performanceTimer.Tick -= performanceTimer_Tick;
             performanceTimer.Dispose();
