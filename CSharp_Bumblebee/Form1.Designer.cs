@@ -8,7 +8,6 @@ namespace CSharp_Bumblebee
         {
             if (disposing && (components != null))
                 components.Dispose();
-
             base.Dispose(disposing);
         }
 
@@ -17,78 +16,110 @@ namespace CSharp_Bumblebee
         private void InitializeComponent()
         {
             this.backgroundWorker1 = new System.ComponentModel.BackgroundWorker();
-            this.imagePanel = new System.Windows.Forms.Panel();
-            this.pBox = new System.Windows.Forms.PictureBox();
+            this.headerPanel = new System.Windows.Forms.Panel();
+            this.headerLayout = new System.Windows.Forms.TableLayoutPanel();
             this.cbDisparity = new System.Windows.Forms.CheckBox();
             this.pBoxLogo = new System.Windows.Forms.PictureBox();
+            this.imagePanel = new System.Windows.Forms.Panel();
+            this.pBox = new System.Windows.Forms.PictureBox();
+            this.headerPanel.SuspendLayout();
+            this.headerLayout.SuspendLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.pBoxLogo)).BeginInit();
             this.imagePanel.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize)(this.pBox)).BeginInit();
-            ((System.ComponentModel.ISupportInitialize)(this.pBoxLogo)).BeginInit();
             this.SuspendLayout();
 
             this.backgroundWorker1.WorkerReportsProgress = true;
             this.backgroundWorker1.WorkerSupportsCancellation = true;
             this.backgroundWorker1.DoWork += new System.ComponentModel.DoWorkEventHandler(this.backgroundWorker1_DoWork);
 
-            this.imagePanel.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom)
-                | System.Windows.Forms.AnchorStyles.Left)
+            this.headerPanel.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left)
                 | System.Windows.Forms.AnchorStyles.Right)));
-            this.imagePanel.BackColor = System.Drawing.Color.Black;
-            this.imagePanel.Controls.Add(this.pBox);
-            this.imagePanel.Location = new System.Drawing.Point(31, 179);
-            this.imagePanel.Name = "imagePanel";
-            this.imagePanel.Size = new System.Drawing.Size(1400, 788);
-            this.imagePanel.TabIndex = 4;
+            this.headerPanel.Controls.Add(this.headerLayout);
+            this.headerPanel.Location = new System.Drawing.Point(31, 48);
+            this.headerPanel.Name = "headerPanel";
+            this.headerPanel.Size = new System.Drawing.Size(1400, 112);
+            this.headerPanel.TabIndex = 5;
 
-            this.pBox.BackColor = System.Drawing.Color.Black;
-            this.pBox.Dock = System.Windows.Forms.DockStyle.Fill;
-            this.pBox.Location = new System.Drawing.Point(0, 0);
-            this.pBox.Name = "pBox";
-            this.pBox.Size = new System.Drawing.Size(1400, 788);
-            this.pBox.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
-            this.pBox.TabIndex = 1;
-            this.pBox.TabStop = false;
+            this.headerLayout.Anchor = System.Windows.Forms.AnchorStyles.Top;
+            this.headerLayout.ColumnCount = 4;
+            this.headerLayout.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 150F));
+            this.headerLayout.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 135F));
+            this.headerLayout.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 135F));
+            this.headerLayout.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Absolute, 210F));
+            this.headerLayout.Controls.Add(this.cbDisparity, 0, 0);
+            this.headerLayout.Controls.Add(this.pBoxLogo, 3, 0);
+            this.headerLayout.Location = new System.Drawing.Point(385, 0);
+            this.headerLayout.Name = "headerLayout";
+            this.headerLayout.RowCount = 1;
+            this.headerLayout.RowStyles.Add(new System.Windows.Forms.RowStyle(System.Windows.Forms.SizeType.Percent, 100F));
+            this.headerLayout.Size = new System.Drawing.Size(630, 108);
+            this.headerLayout.TabIndex = 0;
 
+            this.cbDisparity.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.cbDisparity.AutoSize = true;
             this.cbDisparity.BackColor = System.Drawing.SystemColors.ButtonFace;
             this.cbDisparity.FlatAppearance.BorderColor = System.Drawing.Color.DarkBlue;
             this.cbDisparity.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.cbDisparity.Font = new System.Drawing.Font("中國龍特圓體", 14F);
             this.cbDisparity.ForeColor = System.Drawing.Color.DarkGoldenrod;
-            this.cbDisparity.Location = new System.Drawing.Point(370, 90);
+            this.cbDisparity.Location = new System.Drawing.Point(27, 42);
             this.cbDisparity.Name = "cbDisparity";
             this.cbDisparity.Size = new System.Drawing.Size(96, 23);
             this.cbDisparity.TabIndex = 2;
             this.cbDisparity.Text = "Disparity";
             this.cbDisparity.UseVisualStyleBackColor = false;
 
-            this.pBoxLogo.Anchor = System.Windows.Forms.AnchorStyles.Top;
+            this.pBoxLogo.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.pBoxLogo.InitialImage = null;
-            this.pBoxLogo.Location = new System.Drawing.Point(789, 43);
+            this.pBoxLogo.Location = new System.Drawing.Point(430, 4);
+            this.pBoxLogo.Margin = new System.Windows.Forms.Padding(10, 4, 4, 4);
             this.pBoxLogo.Name = "pBoxLogo";
-            this.pBoxLogo.Size = new System.Drawing.Size(196, 109);
+            this.pBoxLogo.Size = new System.Drawing.Size(190, 100);
             this.pBoxLogo.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
             this.pBoxLogo.TabIndex = 3;
             this.pBoxLogo.TabStop = false;
 
+            this.imagePanel.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom)
+                | System.Windows.Forms.AnchorStyles.Left)
+                | System.Windows.Forms.AnchorStyles.Right)));
+            this.imagePanel.BackColor = System.Drawing.Color.Black;
+            this.imagePanel.Controls.Add(this.pBox);
+            this.imagePanel.Location = new System.Drawing.Point(31, 170);
+            this.imagePanel.Name = "imagePanel";
+            this.imagePanel.Size = new System.Drawing.Size(1400, 797);
+            this.imagePanel.TabIndex = 4;
+
+            this.pBox.BackColor = System.Drawing.Color.Black;
+            this.pBox.Dock = System.Windows.Forms.DockStyle.Fill;
+            this.pBox.Location = new System.Drawing.Point(0, 0);
+            this.pBox.Name = "pBox";
+            this.pBox.Size = new System.Drawing.Size(1400, 797);
+            this.pBox.SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom;
+            this.pBox.TabIndex = 1;
+            this.pBox.TabStop = false;
+
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 12F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1484, 1061);
-            this.Controls.Add(this.pBoxLogo);
-            this.Controls.Add(this.cbDisparity);
+            this.Controls.Add(this.headerPanel);
             this.Controls.Add(this.imagePanel);
             this.Name = "Form1";
             this.Text = "Form1";
+            this.headerPanel.ResumeLayout(false);
+            this.headerLayout.ResumeLayout(false);
+            this.headerLayout.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.pBoxLogo)).EndInit();
             this.imagePanel.ResumeLayout(false);
             ((System.ComponentModel.ISupportInitialize)(this.pBox)).EndInit();
-            ((System.ComponentModel.ISupportInitialize)(this.pBoxLogo)).EndInit();
             this.ResumeLayout(false);
-            this.PerformLayout();
         }
 
         #endregion
 
         private System.ComponentModel.BackgroundWorker backgroundWorker1;
+        private System.Windows.Forms.Panel headerPanel;
+        private System.Windows.Forms.TableLayoutPanel headerLayout;
         private System.Windows.Forms.Panel imagePanel;
         private System.Windows.Forms.PictureBox pBox;
         private System.Windows.Forms.CheckBox cbDisparity;
