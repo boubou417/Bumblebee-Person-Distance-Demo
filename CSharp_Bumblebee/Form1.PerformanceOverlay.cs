@@ -8,10 +8,18 @@ namespace CSharp_Bumblebee
     public partial class Form1
     {
         private readonly Stopwatch performanceClock = new Stopwatch();
+        private readonly Stopwatch uiPaintClock = new Stopwatch();
+        private readonly Process currentProcess = Process.GetCurrentProcess();
         private Timer performanceTimer;
         private int lastPerformanceFrameCount;
         private double displayFps;
         private double poseFps;
+        private double frameMs;
+        private double estimatedPoseBudgetMs;
+        private double uiPaintMs;
+        private double processCpuPercent;
+        private TimeSpan lastProcessCpuTime;
+        private DateTime lastCpuSampleTime;
 
         protected override void OnShown(EventArgs e)
         {
@@ -26,6 +34,8 @@ namespace CSharp_Bumblebee
 
             performanceClock.Restart();
             lastPerformanceFrameCount = poseFrameCounter;
+            lastProcessCpuTime = currentProcess.TotalProcessorTime;
+            lastCpuSampleTime = DateTime.UtcNow;
 
             pBox.Paint += pBox_PerformancePaint;
 
@@ -47,14 +57,30 @@ namespace CSharp_Bumblebee
                 frameDelta = currentFrameCount;
 
             displayFps = frameDelta / seconds;
-
-            // With a valid cached pose, inference runs once every PoseInferenceInterval frames.
-            // When nobody is detected the current V1 logic retries inference every frame,
-            // so show the actual expected inference cadence for that state.
             poseFps = cachedPosePeople.Count > 0
                 ? displayFps / PoseInferenceInterval
                 : displayFps;
 
+            frameMs = displayFps > 0 ? 1000.0 / displayFps : 0;
+
+            // This is the maximum average time budget available to one pose inference
+            // at the current measured cadence. It is intentionally labelled Budget,
+            // not Inference, until Forward() is instrumented directly.
+            estimatedPoseBudgetMs = poseFps > 0 ? 1000.0 / poseFps : 0;
+
+            DateTime now = DateTime.UtcNow;
+            TimeSpan cpuNow = currentProcess.TotalProcessorTime;
+            double wallMs = (now - lastCpuSampleTime).TotalMilliseconds;
+            double cpuMs = (cpuNow - lastProcessCpuTime).TotalMilliseconds;
+            if (wallMs > 0 && Environment.ProcessorCount > 0)
+            {
+                processCpuPercent = cpuMs / (wallMs * Environment.ProcessorCount) * 100.0;
+                if (processCpuPercent < 0) processCpuPercent = 0;
+                if (processCpuPercent > 100) processCpuPercent = 100;
+            }
+
+            lastProcessCpuTime = cpuNow;
+            lastCpuSampleTime = now;
             lastPerformanceFrameCount = currentFrameCount;
             performanceClock.Restart();
             pBox.Invalidate();
@@ -62,9 +88,15 @@ namespace CSharp_Bumblebee
 
         private void pBox_PerformancePaint(object sender, PaintEventArgs e)
         {
+            uiPaintClock.Restart();
+
             string info =
                 "Display FPS : " + displayFps.ToString("F1") + Environment.NewLine +
+                "Frame       : " + frameMs.ToString("F1") + " ms" + Environment.NewLine +
                 "Pose FPS    : " + poseFps.ToString("F1") + Environment.NewLine +
+                "Pose Budget : " + estimatedPoseBudgetMs.ToString("F1") + " ms" + Environment.NewLine +
+                "UI Paint    : " + uiPaintMs.ToString("F2") + " ms" + Environment.NewLine +
+                "Process CPU : " + processCpuPercent.ToString("F1") + "%" + Environment.NewLine +
                 "Pose Int.   : " + PoseInferenceInterval + Environment.NewLine +
                 "People      : " + cachedPosePeople.Count;
 
@@ -88,6 +120,12 @@ namespace CSharp_Bumblebee
                     e.Graphics.DrawString(info, font, textBrush, x + padding, y + padding);
                 }
             }
+
+            uiPaintClock.Stop();
+            double latestPaintMs = uiPaintClock.Elapsed.TotalMilliseconds;
+            uiPaintMs = uiPaintMs <= 0
+                ? latestPaintMs
+                : uiPaintMs * 0.8 + latestPaintMs * 0.2;
         }
 
         private void DisposePerformanceOverlay()
@@ -100,6 +138,8 @@ namespace CSharp_Bumblebee
             performanceTimer.Dispose();
             performanceTimer = null;
             performanceClock.Stop();
+            uiPaintClock.Stop();
+            currentProcess.Dispose();
         }
     }
 }
