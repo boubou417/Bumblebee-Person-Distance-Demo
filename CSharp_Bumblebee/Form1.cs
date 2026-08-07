@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Emgu.CV;
@@ -30,7 +29,8 @@ namespace CSharp_Bumblebee
         [DllImport("Gdi32.dll", EntryPoint = "CreateRoundRectRgn")]
         private static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int ew, int eh);
 
-        private const int YoloSize = 640;
+        private const int YoloSize = 512;
+        private const string PoseModelFile = "yolov8n-pose-512.onnx";
         private const float ConfidenceThreshold = 0.50f;
         private const float KeypointThreshold = 0.35f;
         private const float NmsThreshold = 0.45f;
@@ -332,11 +332,9 @@ namespace CSharp_Bumblebee
             }
         }
 
-        public delegate void InvokeDelegate(Bitmap bmp, int imgWidth, int imgHeight);
-
         private void backgroundWorker1_DoWork(object sender, DoWorkEventArgs e)
         {
-            Net net = DnnInvoke.ReadNetFromONNX("yolov8n-pose.onnx");
+            Net net = DnnInvoke.ReadNetFromONNX(PoseModelFile);
             net.SetPreferableBackend(Emgu.CV.Dnn.Backend.OpenCV);
             net.SetPreferableTarget(Target.Cpu);
 
@@ -376,7 +374,6 @@ namespace CSharp_Bumblebee
 
                     int w = (int)rectifiedImg.Width;
                     int h = (int)rectifiedImg.Height;
-                    int stride = (int)rectifiedImg.Stride;
 
                     using (Mat bgr = new Mat())
                     using (Mat rgb = new Mat(h, w, DepthType.Cv8U, 3, rectifiedImg.DataPtr, 0))
@@ -405,19 +402,7 @@ namespace CSharp_Bumblebee
                         poseFrameCounter++;
 
                         sw.Restart();
-                        using (Bitmap bmp = new Bitmap(
-                            w,
-                            h,
-                            stride,
-                            PixelFormat.Format24bppRgb,
-                            bgr.DataPointer))
-                        {
-                            pBox.BeginInvoke(
-                                new InvokeDelegate(InvokeDisplay),
-                                new Bitmap(bmp),
-                                w,
-                                h);
-                        }
+                        QueueDisplayFrame(bgr);
                         sw.Stop();
                         SetBitmapQueueMs(sw.Elapsed.TotalMilliseconds);
                     }
@@ -473,7 +458,6 @@ namespace CSharp_Bumblebee
 
         private unsafe void DetectPose(Net net, Mat mat)
         {
-            Stopwatch total = Stopwatch.StartNew();
             float scale;
             int padX;
             int padY;
@@ -579,8 +563,6 @@ namespace CSharp_Bumblebee
                 post.Stop();
                 SetPosePostMs(post.Elapsed.TotalMilliseconds);
             }
-
-            total.Stop();
         }
 
         private unsafe void DrawCachedPoseAndDistance(ushort* disparityData, Mat mat)
@@ -864,17 +846,11 @@ namespace CSharp_Bumblebee
                 : values[m];
         }
 
-        private void InvokeDisplay(Bitmap bmp, int imgWidth, int imgHeight)
-        {
-            Bitmap old = pBox.Image as Bitmap;
-            pBox.Image = bmp;
-            old?.Dispose();
-        }
-
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             capImg = false;
             DisposePerformanceOverlay();
+            DisposeFastDisplay();
 
             try
             {
