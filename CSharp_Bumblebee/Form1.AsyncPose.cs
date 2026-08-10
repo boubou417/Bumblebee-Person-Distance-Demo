@@ -14,9 +14,9 @@ namespace CSharp_Bumblebee
 {
     public partial class Form1
     {
-        private const int OrtIntraOpThreads = 4;
+        private const int OrtIntraOpThreads = 2;
         private const int OrtInterOpThreads = 1;
-        private const string PoseBackendName = "ORT CPU I4";
+        private const string PoseBackendName = "ORT CPU I2";
 
         private readonly object poseFrameLock = new object();
         private readonly object poseResultLock = new object();
