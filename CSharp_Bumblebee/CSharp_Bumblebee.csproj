@@ -74,6 +74,9 @@
     <Compile Include="Form1.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Form1.AsyncPose.cs">
+      <DependentUpon>Form1.cs</DependentUpon>
+    </Compile>
     <Compile Include="Form1.FastDisplay.cs">
       <DependentUpon>Form1.cs</DependentUpon>
     </Compile>
