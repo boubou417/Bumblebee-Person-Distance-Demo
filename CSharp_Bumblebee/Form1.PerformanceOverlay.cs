@@ -11,7 +11,7 @@ namespace CSharp_Bumblebee
         private readonly Stopwatch performanceClock = new Stopwatch();
         private readonly Stopwatch uiPaintClock = new Stopwatch();
         private readonly Process currentProcess = Process.GetCurrentProcess();
-        private Timer performanceTimer;
+        private System.Windows.Forms.Timer performanceTimer;
 
         private int lastCameraFrameCount;
         private int lastDisplayedFrameCount;
@@ -55,7 +55,7 @@ namespace CSharp_Bumblebee
             lastCpuSampleTime = DateTime.UtcNow;
             pBox.Paint += pBox_PerformancePaint;
 
-            performanceTimer = new Timer();
+            performanceTimer = new System.Windows.Forms.Timer();
             performanceTimer.Interval = 1000;
             performanceTimer.Tick += performanceTimer_Tick;
             performanceTimer.Start();
@@ -168,7 +168,6 @@ namespace CSharp_Bumblebee
             if (current >= previous)
                 return current - previous;
 
-            // The camera/pose counters are reset when capture is restarted.
             return current;
         }
 
