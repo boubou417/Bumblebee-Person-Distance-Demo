@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Threading;
 using Emgu.CV;
+using Emgu.CV.CvEnum;
 
 namespace CSharp_Bumblebee
 {
@@ -18,6 +19,34 @@ namespace CSharp_Bumblebee
         private bool displayPumpRunning;
         private int displayPumpInvokePending;
         private int displayedFrameCounter;
+        private int displayTargetWidth;
+        private int displayTargetHeight;
+        private bool displaySizingInitialized;
+
+        private void InitializeFastDisplaySizing()
+        {
+            if (displaySizingInitialized || pBox == null)
+                return;
+
+            displaySizingInitialized = true;
+            pBox.SizeMode = System.Windows.Forms.PictureBoxSizeMode.CenterImage;
+            pBox.SizeChanged += pBox_FastDisplaySizeChanged;
+            UpdateFastDisplayTargetSize();
+        }
+
+        private void pBox_FastDisplaySizeChanged(object sender, EventArgs e)
+        {
+            UpdateFastDisplayTargetSize();
+        }
+
+        private void UpdateFastDisplayTargetSize()
+        {
+            if (pBox == null)
+                return;
+
+            Volatile.Write(ref displayTargetWidth, Math.Max(1, pBox.ClientSize.Width));
+            Volatile.Write(ref displayTargetHeight, Math.Max(1, pBox.ClientSize.Height));
+        }
 
         private void EnsureFastDisplayPump()
         {
@@ -42,9 +71,43 @@ namespace CSharp_Bumblebee
 
             EnsureFastDisplayPump();
 
-            // Keep only the latest display frame. Camera capture is never allowed
-            // to queue a long chain of UI work behind the current picture.
-            Mat frameMat = source.Clone();
+            int targetWidth = Volatile.Read(ref displayTargetWidth);
+            int targetHeight = Volatile.Read(ref displayTargetHeight);
+
+            if (targetWidth <= 0 || targetHeight <= 0)
+            {
+                targetWidth = source.Width;
+                targetHeight = source.Height;
+            }
+
+            double scale = Math.Min(
+                targetWidth / (double)source.Width,
+                targetHeight / (double)source.Height);
+
+            int outputWidth = Math.Max(1, (int)Math.Round(source.Width * scale));
+            int outputHeight = Math.Max(1, (int)Math.Round(source.Height * scale));
+
+            Mat frameMat = new Mat();
+
+            if (outputWidth == source.Width && outputHeight == source.Height)
+            {
+                source.CopyTo(frameMat);
+            }
+            else
+            {
+                Inter interpolation = scale < 1.0
+                    ? Inter.Area
+                    : Inter.Linear;
+
+                CvInvoke.Resize(
+                    source,
+                    frameMat,
+                    new Size(outputWidth, outputHeight),
+                    0,
+                    0,
+                    interpolation);
+            }
+
             Bitmap frameBitmap = new Bitmap(
                 frameMat.Width,
                 frameMat.Height,
@@ -69,8 +132,6 @@ namespace CSharp_Bumblebee
             if (!displayPumpRunning || IsDisposed || !IsHandleCreated)
                 return;
 
-            // At most one UI callback may be waiting at any time. This prevents
-            // BeginInvoke messages from flooding the WinForms message queue.
             if (Interlocked.CompareExchange(ref displayPumpInvokePending, 1, 0) != 0)
                 return;
 
@@ -104,7 +165,6 @@ namespace CSharp_Bumblebee
                 pBox.Image = nextFrame.Bitmap;
                 oldFrame?.Dispose();
 
-                // Count only frames actually handed to the PictureBox.
                 Interlocked.Increment(ref displayedFrameCounter);
             }
             finally
@@ -118,6 +178,12 @@ namespace CSharp_Bumblebee
             System.Threading.Timer timer;
             DisplayFrame pending;
             DisplayFrame current;
+
+            if (displaySizingInitialized && pBox != null)
+            {
+                pBox.SizeChanged -= pBox_FastDisplaySizeChanged;
+                displaySizingInitialized = false;
+            }
 
             lock (displayFrameLock)
             {
