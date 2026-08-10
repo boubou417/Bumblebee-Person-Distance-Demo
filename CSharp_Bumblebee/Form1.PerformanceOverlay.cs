@@ -40,6 +40,7 @@ namespace CSharp_Bumblebee
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            InitializeUiPolish();
             InitializePerformanceOverlay();
         }
 
@@ -192,6 +193,9 @@ namespace CSharp_Bumblebee
 
         private void pBox_PerformancePaint(object sender, PaintEventArgs e)
         {
+            if (!showDebugOverlay)
+                return;
+
             uiPaintClock.Restart();
 
             double c;
