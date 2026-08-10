@@ -36,7 +36,10 @@ namespace CSharp_Bumblebee
         private const float NmsThreshold = 0.45f;
         private const int PoseOutputChannels = 56;
         private const int KeypointCount = 17;
-        private const int PoseInferenceInterval = 2;
+
+        // Camera/display can run independently from pose inference.
+        // Queue a fresh 512x512 pose source every second displayed camera frame.
+        private const int PoseSourceInterval = 2;
 
         private const double DistanceEmaAlpha = 0.25;
         private const double DistanceJumpThresholdMeters = 0.75;
@@ -288,12 +291,12 @@ namespace CSharp_Bumblebee
             if (!started)
             {
                 distanceTracks.Clear();
-                cachedPosePeople.Clear();
                 nextDistanceTrackId = 1;
                 poseFrameCounter = 0;
                 capImg = true;
                 capImgComplete = false;
 
+                StartPoseWorker();
                 cam.BeginAcquisition();
                 backgroundWorker1.RunWorkerAsync();
 
@@ -334,10 +337,6 @@ namespace CSharp_Bumblebee
 
         private void backgroundWorker1_DoWork(object sender, DoWorkEventArgs e)
         {
-            Net net = DnnInvoke.ReadNetFromONNX(PoseModelFile);
-            net.SetPreferableBackend(Emgu.CV.Dnn.Backend.OpenCV);
-            net.SetPreferableTarget(Target.Cpu);
-
             IManagedImageList imageList = new ManagedImageList();
             IManagedImage rectifiedImg = new ManagedImage();
             IManagedImage disparityImg = new ManagedImage();
@@ -383,14 +382,16 @@ namespace CSharp_Bumblebee
                         sw.Stop();
                         SetConvertMs(sw.Elapsed.TotalMilliseconds);
 
+                        if ((poseFrameCounter % PoseSourceInterval) == 0)
+                        {
+                            sw.Restart();
+                            QueuePoseFrame(bgr);
+                            sw.Stop();
+                            SetPosePrepMs(sw.Elapsed.TotalMilliseconds);
+                        }
+
                         unsafe
                         {
-                            bool runInference = cachedPosePeople.Count == 0 ||
-                                                (poseFrameCounter % PoseInferenceInterval) == 0;
-
-                            if (runInference)
-                                DetectPose(net, bgr);
-
                             sw.Restart();
                             DrawCachedPoseAndDistance(
                                 (ushort*)disparityImg.NativeData,
@@ -410,11 +411,10 @@ namespace CSharp_Bumblebee
             }
             finally
             {
-                net.Dispose();
+                StopPoseWorker();
                 rectifiedImg.Dispose();
                 disparityImg.Dispose();
                 distanceTracks.Clear();
-                cachedPosePeople.Clear();
                 capImgComplete = true;
 
                 BeginInvoke(new Action(() =>
@@ -456,15 +456,10 @@ namespace CSharp_Bumblebee
             return dst;
         }
 
-        private unsafe void DetectPose(Net net, Mat mat)
+        private unsafe void DetectPose(Net net, PoseWorkItem item)
         {
-            float scale;
-            int padX;
-            int padY;
-
-            using (Mat input = Letterbox(mat, out scale, out padX, out padY))
             using (Mat blob = DnnInvoke.BlobFromImage(
-                input,
+                item.Input,
                 1.0 / 255.0,
                 new Size(YoloSize, YoloSize),
                 new MCvScalar(),
@@ -479,6 +474,7 @@ namespace CSharp_Bumblebee
                 SetInferenceMs(forward.Elapsed.TotalMilliseconds);
 
                 Stopwatch post = Stopwatch.StartNew();
+                List<PosePerson> selectedPeople = new List<PosePerson>();
 
                 using (output)
                 using (Mat reshaped = output.Reshape(1, PoseOutputChannels))
@@ -500,10 +496,10 @@ namespace CSharp_Bumblebee
                         if (score < ConfidenceThreshold)
                             continue;
 
-                        float cx = (data[0] - padX) / scale;
-                        float cy = (data[1] - padY) / scale;
-                        float bw = data[2] / scale;
-                        float bh = data[3] / scale;
+                        float cx = (data[0] - item.PadX) / item.Scale;
+                        float cy = (data[1] - item.PadY) / item.Scale;
+                        float bw = data[2] / item.Scale;
+                        float bh = data[3] / item.Scale;
 
                         Rectangle box = ClampRect(
                             new Rectangle(
@@ -511,8 +507,8 @@ namespace CSharp_Bumblebee
                                 (int)(cy - bh / 2),
                                 (int)bw,
                                 (int)bh),
-                            mat.Width,
-                            mat.Height);
+                            item.SourceWidth,
+                            item.SourceHeight);
 
                         if (box.IsEmpty)
                             continue;
@@ -528,8 +524,8 @@ namespace CSharp_Bumblebee
                             int o = 5 + k * 3;
                             person.Keypoints[k] = new PoseKeypoint
                             {
-                                X = (data[o] - padX) / scale,
-                                Y = (data[o + 1] - padY) / scale,
+                                X = (data[o] - item.PadX) / item.Scale,
+                                Y = (data[o + 1] - item.PadY) / item.Scale,
                                 Confidence = data[o + 2]
                             };
                         }
@@ -538,8 +534,6 @@ namespace CSharp_Bumblebee
                         boxes.Add(box);
                         scores.Add(score);
                     }
-
-                    cachedPosePeople.Clear();
 
                     if (people.Count > 0)
                     {
@@ -555,9 +549,15 @@ namespace CSharp_Bumblebee
                                 indices);
 
                             foreach (int index in indices.ToArray())
-                                cachedPosePeople.Add(people[index]);
+                                selectedPeople.Add(people[index]);
                         }
                     }
+                }
+
+                lock (poseResultLock)
+                {
+                    cachedPosePeople.Clear();
+                    cachedPosePeople.AddRange(selectedPeople);
                 }
 
                 post.Stop();
@@ -568,8 +568,9 @@ namespace CSharp_Bumblebee
         private unsafe void DrawCachedPoseAndDistance(ushort* disparityData, Mat mat)
         {
             AgeDistanceTracks();
+            List<PosePerson> posePeople = GetPoseSnapshot();
 
-            foreach (PosePerson person in cachedPosePeople)
+            foreach (PosePerson person in posePeople)
             {
                 DrawSkeleton(mat, person.Keypoints);
 
@@ -849,6 +850,7 @@ namespace CSharp_Bumblebee
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             capImg = false;
+            StopPoseWorker();
             DisposePerformanceOverlay();
             DisposeFastDisplay();
 
