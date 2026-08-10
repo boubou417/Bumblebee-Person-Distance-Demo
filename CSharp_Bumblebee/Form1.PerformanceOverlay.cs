@@ -11,11 +11,13 @@ namespace CSharp_Bumblebee
         private readonly Stopwatch performanceClock = new Stopwatch();
         private readonly Stopwatch uiPaintClock = new Stopwatch();
         private readonly Process currentProcess = Process.GetCurrentProcess();
-        private System.Windows.Forms.Timer performanceTimer;
+        private System.Threading.Timer performanceTimer;
 
-        private int lastCameraFrameCount;
-        private int lastDisplayedFrameCount;
-        private int lastPoseInferenceCount;
+        // Per-sample counters. They are consumed once per second by a ThreadPool timer,
+        // so FPS measurement is not affected if the WinForms UI message queue is busy.
+        private int cameraFramesSample;
+        private int displayedFramesSample;
+        private int poseFramesSample;
 
         private double cameraFps;
         private double displayFps;
@@ -47,18 +49,35 @@ namespace CSharp_Bumblebee
             if (performanceTimer != null)
                 return;
 
+            Interlocked.Exchange(ref cameraFramesSample, 0);
+            Interlocked.Exchange(ref displayedFramesSample, 0);
+            Interlocked.Exchange(ref poseFramesSample, 0);
+
             performanceClock.Restart();
-            lastCameraFrameCount = Volatile.Read(ref poseFrameCounter);
-            lastDisplayedFrameCount = Volatile.Read(ref displayedFrameCounter);
-            lastPoseInferenceCount = Volatile.Read(ref poseInferenceCounter);
             lastProcessCpuTime = currentProcess.TotalProcessorTime;
             lastCpuSampleTime = DateTime.UtcNow;
             pBox.Paint += pBox_PerformancePaint;
 
-            performanceTimer = new System.Windows.Forms.Timer();
-            performanceTimer.Interval = 1000;
-            performanceTimer.Tick += performanceTimer_Tick;
-            performanceTimer.Start();
+            performanceTimer = new System.Threading.Timer(
+                performanceTimer_Tick,
+                null,
+                1000,
+                1000);
+        }
+
+        private void CountCameraFrame()
+        {
+            Interlocked.Increment(ref cameraFramesSample);
+        }
+
+        private void CountDisplayedFrame()
+        {
+            Interlocked.Increment(ref displayedFramesSample);
+        }
+
+        private void CountPoseFrame()
+        {
+            Interlocked.Increment(ref poseFramesSample);
         }
 
         private static double SmoothTiming(double oldValue, double newValue)
@@ -119,23 +138,19 @@ namespace CSharp_Bumblebee
                 bitmapQueueMs = SmoothTiming(bitmapQueueMs, value);
         }
 
-        private void performanceTimer_Tick(object sender, EventArgs e)
+        private void performanceTimer_Tick(object state)
         {
             double seconds = performanceClock.Elapsed.TotalSeconds;
             if (seconds <= 0)
                 return;
 
-            int currentCameraCount = Volatile.Read(ref poseFrameCounter);
-            int currentDisplayedCount = Volatile.Read(ref displayedFrameCounter);
-            int currentPoseCount = Volatile.Read(ref poseInferenceCounter);
+            int cameraFrames = Interlocked.Exchange(ref cameraFramesSample, 0);
+            int displayFrames = Interlocked.Exchange(ref displayedFramesSample, 0);
+            int poseFrames = Interlocked.Exchange(ref poseFramesSample, 0);
 
-            int cameraDelta = GetCounterDelta(currentCameraCount, lastCameraFrameCount);
-            int displayDelta = GetCounterDelta(currentDisplayedCount, lastDisplayedFrameCount);
-            int poseDelta = GetCounterDelta(currentPoseCount, lastPoseInferenceCount);
-
-            cameraFps = cameraDelta / seconds;
-            displayFps = displayDelta / seconds;
-            poseFps = poseDelta / seconds;
+            cameraFps = cameraFrames / seconds;
+            displayFps = displayFrames / seconds;
+            poseFps = poseFrames / seconds;
             frameMs = displayFps > 0 ? 1000.0 / displayFps : 0;
 
             DateTime now = DateTime.UtcNow;
@@ -156,19 +171,20 @@ namespace CSharp_Bumblebee
 
             lastProcessCpuTime = cpuNow;
             lastCpuSampleTime = now;
-            lastCameraFrameCount = currentCameraCount;
-            lastDisplayedFrameCount = currentDisplayedCount;
-            lastPoseInferenceCount = currentPoseCount;
             performanceClock.Restart();
-            pBox.Invalidate();
-        }
 
-        private static int GetCounterDelta(int current, int previous)
-        {
-            if (current >= previous)
-                return current - previous;
-
-            return current;
+            // Statistics are already updated on the ThreadPool thread. This invoke is
+            // only a low-frequency repaint request and cannot block the measurement.
+            if (!IsDisposed && IsHandleCreated)
+            {
+                try
+                {
+                    BeginInvoke(new Action(() => pBox.Invalidate()));
+                }
+                catch
+                {
+                }
+            }
         }
 
         private void pBox_PerformancePaint(object sender, PaintEventArgs e)
@@ -258,13 +274,22 @@ namespace CSharp_Bumblebee
 
         private void DisposePerformanceOverlay()
         {
-            if (performanceTimer == null)
-                return;
-
-            performanceTimer.Stop();
-            performanceTimer.Tick -= performanceTimer_Tick;
-            performanceTimer.Dispose();
+            System.Threading.Timer timer = performanceTimer;
             performanceTimer = null;
+
+            if (timer != null)
+            {
+                try
+                {
+                    timer.Change(Timeout.Infinite, Timeout.Infinite);
+                }
+                catch
+                {
+                }
+
+                timer.Dispose();
+            }
+
             performanceClock.Stop();
             uiPaintClock.Stop();
             currentProcess.Dispose();
