@@ -21,6 +21,7 @@ namespace CSharp_Bumblebee
         private int displayedFrameCounter;
         private int displayTargetWidth;
         private int displayTargetHeight;
+        private int displaySizingInvokePending;
         private bool displaySizingInitialized;
 
         private void InitializeFastDisplaySizing()
@@ -48,8 +49,38 @@ namespace CSharp_Bumblebee
             Volatile.Write(ref displayTargetHeight, Math.Max(1, pBox.ClientSize.Height));
         }
 
+        private void RequestFastDisplaySizingInitialization()
+        {
+            if (displaySizingInitialized || IsDisposed || !IsHandleCreated)
+                return;
+
+            if (Interlocked.CompareExchange(ref displaySizingInvokePending, 1, 0) != 0)
+                return;
+
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        InitializeFastDisplaySizing();
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref displaySizingInvokePending, 0);
+                    }
+                }));
+            }
+            catch
+            {
+                Interlocked.Exchange(ref displaySizingInvokePending, 0);
+            }
+        }
+
         private void EnsureFastDisplayPump()
         {
+            RequestFastDisplaySizingInitialization();
+
             lock (displayFrameLock)
             {
                 if (displayPumpRunning)
@@ -200,6 +231,7 @@ namespace CSharp_Bumblebee
 
             timer?.Dispose();
             Interlocked.Exchange(ref displayPumpInvokePending, 0);
+            Interlocked.Exchange(ref displaySizingInvokePending, 0);
 
             if (pBox != null)
                 pBox.Image = null;
