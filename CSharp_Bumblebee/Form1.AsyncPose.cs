@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Windows.Forms;
 using Emgu.CV;
 using Emgu.CV.Dnn;
 
