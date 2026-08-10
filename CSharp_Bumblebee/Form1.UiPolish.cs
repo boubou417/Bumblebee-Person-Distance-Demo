@@ -26,6 +26,13 @@ namespace CSharp_Bumblebee
         private bool showDebugOverlay = true;
         private bool uiPolishInitialized;
 
+        // Use managed dragging instead of sending WM_NCLBUTTONDOWN immediately.
+        // The native drag message consumed the first click while the window was normal,
+        // which prevented WinForms from receiving the second click needed for maximize.
+        private bool titleDragActive;
+        private Point titleDragCursorStart;
+        private Point titleDragFormStart;
+
         private void InitializeUiPolish()
         {
             if (uiPolishInitialized)
@@ -35,12 +42,68 @@ namespace CSharp_Bumblebee
             KeyPreview = true;
             KeyDown += Form1_UiPolishKeyDown;
 
-            // The title panel already supports double click. The label receives mouse
-            // messages itself, so explicitly give it the same maximize/restore action.
+            ConfigurePolishedTitleBarInput(titleBar);
+            ConfigurePolishedTitleBarInput(titleLabel);
+
+            // The title panel already has a DoubleClick handler in Form1.cs.
+            // The label receives mouse messages itself, so explicitly give it
+            // the same maximize/restore action.
             if (titleLabel != null)
                 titleLabel.DoubleClick += (s, e) => ToggleMaximize();
 
             ApplyExhibitionStyle();
+        }
+
+        private void ConfigurePolishedTitleBarInput(Control control)
+        {
+            if (control == null)
+                return;
+
+            // Remove the old handler that immediately called SendMessage(HTCAPTION).
+            // That behavior allowed dragging, but swallowed the first click of a
+            // double-click while the window was in its normal state.
+            control.MouseDown -= TitleBar_MouseDown;
+            control.MouseDown += PolishedTitleBar_MouseDown;
+            control.MouseMove += PolishedTitleBar_MouseMove;
+            control.MouseUp += PolishedTitleBar_MouseUp;
+        }
+
+        private void PolishedTitleBar_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left || e.Clicks > 1)
+                return;
+
+            if (WindowState != FormWindowState.Normal)
+                return;
+
+            titleDragActive = true;
+            titleDragCursorStart = Cursor.Position;
+            titleDragFormStart = Location;
+        }
+
+        private void PolishedTitleBar_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!titleDragActive || e.Button != MouseButtons.Left)
+                return;
+
+            Point cursor = Cursor.Position;
+            int dx = cursor.X - titleDragCursorStart.X;
+            int dy = cursor.Y - titleDragCursorStart.Y;
+
+            // Ignore tiny movements so a normal click/double-click does not make
+            // the window visibly jump by one or two pixels.
+            if (Math.Abs(dx) < 3 && Math.Abs(dy) < 3)
+                return;
+
+            Location = new Point(
+                titleDragFormStart.X + dx,
+                titleDragFormStart.Y + dy);
+        }
+
+        private void PolishedTitleBar_MouseUp(object sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+                titleDragActive = false;
         }
 
         private void ApplyExhibitionStyle()
