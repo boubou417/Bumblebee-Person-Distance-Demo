@@ -31,6 +31,7 @@ namespace CSharp_Bumblebee
         private double copyMs;
         private double convertMs;
         private double posePrepMs;
+        private double tensorPrepMs;
         private double inferenceMs;
         private double posePostMs;
         private double distanceRenderMs;
@@ -56,9 +57,6 @@ namespace CSharp_Bumblebee
             lastCpuSampleTime = DateTime.UtcNow;
             pBox.Paint += pBox_PerformancePaint;
 
-            // Use a ThreadPool timer instead of WinForms.Timer. The UI thread is busy
-            // presenting camera frames, so a Forms timer can be delayed/starved and
-            // leave FPS values stuck at zero even while capture is running.
             performanceTimer = new System.Threading.Timer(
                 performanceTimer_Tick,
                 null,
@@ -98,6 +96,12 @@ namespace CSharp_Bumblebee
         {
             lock (profilingLock)
                 posePrepMs = SmoothTiming(posePrepMs, value);
+        }
+
+        private void SetTensorPrepMs(double value)
+        {
+            lock (profilingLock)
+                tensorPrepMs = SmoothTiming(tensorPrepMs, value);
         }
 
         private void SetInferenceMs(double value)
@@ -166,8 +170,6 @@ namespace CSharp_Bumblebee
             lastPoseInferenceCount = currentPoseCount;
             performanceClock.Restart();
 
-            // The measurements are already updated here on a ThreadPool thread.
-            // This invoke only requests a repaint once per second.
             if (!IsDisposed && IsHandleCreated)
             {
                 try
@@ -185,7 +187,6 @@ namespace CSharp_Bumblebee
             if (current >= previous)
                 return current - previous;
 
-            // Counters are reset when a new acquisition session starts.
             return current;
         }
 
@@ -197,6 +198,7 @@ namespace CSharp_Bumblebee
             double cp;
             double cv;
             double prep;
+            double tensor;
             double inf;
             double post;
             double dist;
@@ -208,6 +210,7 @@ namespace CSharp_Bumblebee
                 cp = copyMs;
                 cv = convertMs;
                 prep = posePrepMs;
+                tensor = tensorPrepMs;
                 inf = inferenceMs;
                 post = posePostMs;
                 dist = distanceRenderMs;
@@ -224,6 +227,7 @@ namespace CSharp_Bumblebee
                 "Copy        : " + cp.ToString("F1") + " ms" + Environment.NewLine +
                 "Convert     : " + cv.ToString("F1") + " ms" + Environment.NewLine +
                 "Pose Prep   : " + prep.ToString("F1") + " ms" + Environment.NewLine +
+                "Tensor Prep : " + tensor.ToString("F1") + " ms" + Environment.NewLine +
                 "Inference   : " + inf.ToString("F1") + " ms" + Environment.NewLine +
                 "Pose Post   : " + post.ToString("F1") + " ms" + Environment.NewLine +
                 "Dist/Draw   : " + dist.ToString("F1") + " ms" + Environment.NewLine +
@@ -231,6 +235,7 @@ namespace CSharp_Bumblebee
                 "UI Paint    : " + uiPaintMs.ToString("F2") + " ms" + Environment.NewLine +
                 "Process CPU : " + processCpuPercent.ToString("F1") + "%" + Environment.NewLine +
                 "Pose FPS    : " + poseFps.ToString("F1") + Environment.NewLine +
+                "Pose EP     : " + PoseBackendName + Environment.NewLine +
                 "Pose SrcInt : " + PoseSourceInterval + Environment.NewLine +
                 "People      : " + GetPosePeopleCount();
 
