@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Threading;
 using Emgu.CV;
 
 namespace CSharp_Bumblebee
@@ -11,6 +12,7 @@ namespace CSharp_Bumblebee
         private DisplayFrame pendingDisplayFrame;
         private DisplayFrame currentDisplayFrame;
         private bool displayInvokePending;
+        private int displayedFrameCounter;
 
         private void QueueDisplayFrame(Mat source)
         {
@@ -74,6 +76,10 @@ namespace CSharp_Bumblebee
                 currentDisplayFrame = nextFrame;
                 pBox.Image = nextFrame.Bitmap;
                 oldFrame?.Dispose();
+
+                // Count frames that actually reached the PictureBox, not merely
+                // frames produced by the camera worker.
+                Interlocked.Increment(ref displayedFrameCounter);
             }
 
             bool repost = false;
