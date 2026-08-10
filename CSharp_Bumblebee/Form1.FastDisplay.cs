@@ -101,7 +101,7 @@ namespace CSharp_Bumblebee
 
         private static int Align24BppWidth(int width)
         {
-            // Bitmap(width, height, stride, Format24bppRgb, scan0) requires a
+            // Bitmap(width, height, stride, Format24bppRgb) requires a
             // DWORD-aligned stride. An OpenCV CV_8UC3 Mat normally has
             // stride = width * 3, so keeping width divisible by four guarantees
             // a stride divisible by four as well.
@@ -118,6 +118,11 @@ namespace CSharp_Bumblebee
                 return;
 
             EnsureFastDisplayPump();
+
+            // Add the exhibition presentation layer at native camera resolution,
+            // then resize once for the PictureBox. This keeps colored skeletons,
+            // anti-aliased joints and distance badges crisp without adding UI work.
+            ApplyUiPolishOverlay(source);
 
             int targetWidth = Volatile.Read(ref displayTargetWidth);
             int targetHeight = Volatile.Read(ref displayTargetHeight);
