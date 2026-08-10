@@ -9,8 +9,12 @@ namespace CSharp_Bumblebee
 {
     public partial class Form1
     {
-        private const int TargetDisplayFps = 30;
-        private const int DisplayPumpPeriodMs = 1000 / TargetDisplayFps;
+        // A nominal 33 ms ThreadPool timer was consistently delivering only about
+        // 21 FPS on the test PC. Windows timer scheduling can quantize that period
+        // upward, so request a shorter 20 ms cadence and keep the existing
+        // single-pending-callback gate. The gate still prevents UI queue flooding,
+        // while allowing the actual display rate to move toward 25-30 FPS.
+        private const int DisplayPumpPeriodMs = 20;
 
         private readonly object displayFrameLock = new object();
         private DisplayFrame pendingDisplayFrame;
@@ -211,6 +215,9 @@ namespace CSharp_Bumblebee
             if (!displayPumpRunning || IsDisposed || !IsHandleCreated)
                 return;
 
+            // Keep at most one UI callback pending. A faster timer therefore does
+            // not accumulate stale BeginInvoke work if the UI thread is momentarily
+            // busy; the next callback simply presents the latest available frame.
             if (Interlocked.CompareExchange(ref displayPumpInvokePending, 1, 0) != 0)
                 return;
 
