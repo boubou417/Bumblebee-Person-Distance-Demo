@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace CSharp_Bumblebee
@@ -11,8 +12,12 @@ namespace CSharp_Bumblebee
         private readonly Stopwatch uiPaintClock = new Stopwatch();
         private readonly Process currentProcess = Process.GetCurrentProcess();
         private Timer performanceTimer;
-        private int lastPerformanceFrameCount;
+
+        private int lastCameraFrameCount;
+        private int lastDisplayedFrameCount;
         private int lastPoseInferenceCount;
+
+        private double cameraFps;
         private double displayFps;
         private double poseFps;
         private double frameMs;
@@ -43,8 +48,9 @@ namespace CSharp_Bumblebee
                 return;
 
             performanceClock.Restart();
-            lastPerformanceFrameCount = poseFrameCounter;
-            lastPoseInferenceCount = poseInferenceCounter;
+            lastCameraFrameCount = Volatile.Read(ref poseFrameCounter);
+            lastDisplayedFrameCount = Volatile.Read(ref displayedFrameCounter);
+            lastPoseInferenceCount = Volatile.Read(ref poseInferenceCounter);
             lastProcessCpuTime = currentProcess.TotalProcessorTime;
             lastCpuSampleTime = DateTime.UtcNow;
             pBox.Paint += pBox_PerformancePaint;
@@ -119,17 +125,16 @@ namespace CSharp_Bumblebee
             if (seconds <= 0)
                 return;
 
-            int currentFrameCount = poseFrameCounter;
-            int frameDelta = currentFrameCount - lastPerformanceFrameCount;
-            if (frameDelta < 0)
-                frameDelta = currentFrameCount;
+            int currentCameraCount = Volatile.Read(ref poseFrameCounter);
+            int currentDisplayedCount = Volatile.Read(ref displayedFrameCounter);
+            int currentPoseCount = Volatile.Read(ref poseInferenceCounter);
 
-            int currentPoseCount = poseInferenceCounter;
-            int poseDelta = currentPoseCount - lastPoseInferenceCount;
-            if (poseDelta < 0)
-                poseDelta = currentPoseCount;
+            int cameraDelta = GetCounterDelta(currentCameraCount, lastCameraFrameCount);
+            int displayDelta = GetCounterDelta(currentDisplayedCount, lastDisplayedFrameCount);
+            int poseDelta = GetCounterDelta(currentPoseCount, lastPoseInferenceCount);
 
-            displayFps = frameDelta / seconds;
+            cameraFps = cameraDelta / seconds;
+            displayFps = displayDelta / seconds;
             poseFps = poseDelta / seconds;
             frameMs = displayFps > 0 ? 1000.0 / displayFps : 0;
 
@@ -151,10 +156,20 @@ namespace CSharp_Bumblebee
 
             lastProcessCpuTime = cpuNow;
             lastCpuSampleTime = now;
-            lastPerformanceFrameCount = currentFrameCount;
+            lastCameraFrameCount = currentCameraCount;
+            lastDisplayedFrameCount = currentDisplayedCount;
             lastPoseInferenceCount = currentPoseCount;
             performanceClock.Restart();
             pBox.Invalidate();
+        }
+
+        private static int GetCounterDelta(int current, int previous)
+        {
+            if (current >= previous)
+                return current - previous;
+
+            // The camera/pose counters are reset when capture is restarted.
+            return current;
         }
 
         private void pBox_PerformancePaint(object sender, PaintEventArgs e)
@@ -182,7 +197,10 @@ namespace CSharp_Bumblebee
                 bmp = bitmapQueueMs;
             }
 
+            string state = capImg ? "RUN" : "STOP";
             string info =
+                "State       : " + state + Environment.NewLine +
+                "Camera FPS  : " + cameraFps.ToString("F1") + Environment.NewLine +
                 "Display FPS : " + displayFps.ToString("F1") + Environment.NewLine +
                 "Frame       : " + frameMs.ToString("F1") + " ms" + Environment.NewLine +
                 "Capture     : " + c.ToString("F1") + " ms" + Environment.NewLine +
