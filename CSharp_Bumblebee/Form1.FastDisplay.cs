@@ -95,6 +95,19 @@ namespace CSharp_Bumblebee
             }
         }
 
+        private static int Align24BppWidth(int width)
+        {
+            // Bitmap(width, height, stride, Format24bppRgb, scan0) requires a
+            // DWORD-aligned stride. An OpenCV CV_8UC3 Mat normally has
+            // stride = width * 3, so keeping width divisible by four guarantees
+            // a stride divisible by four as well.
+            if (width < 4)
+                return width;
+
+            int aligned = width - (width % 4);
+            return Math.Max(4, aligned);
+        }
+
         private void QueueDisplayFrame(Mat source)
         {
             if (source == null || source.IsEmpty)
@@ -118,44 +131,79 @@ namespace CSharp_Bumblebee
             int outputWidth = Math.Max(1, (int)Math.Round(source.Width * scale));
             int outputHeight = Math.Max(1, (int)Math.Round(source.Height * scale));
 
+            // On the first frame the target size can still be the native camera
+            // size. After the UI has initialized, the second frame may use a
+            // non-DWORD-aligned PictureBox width. That produces a CV_8UC3 Mat
+            // whose Step is not valid for the GDI+ 24-bpp Bitmap constructor.
+            // Align the display width before Resize so the zero-copy Bitmap stays
+            // valid without adding an expensive row-by-row copy.
+            int alignedWidth = Align24BppWidth(outputWidth);
+            if (alignedWidth != outputWidth && alignedWidth >= 4)
+            {
+                outputWidth = alignedWidth;
+                double alignedScale = outputWidth / (double)source.Width;
+                outputHeight = Math.Max(
+                    1,
+                    (int)Math.Round(source.Height * alignedScale));
+            }
+
             Mat frameMat = new Mat();
 
-            if (outputWidth == source.Width && outputHeight == source.Height)
+            try
             {
-                source.CopyTo(frameMat);
+                if (outputWidth == source.Width && outputHeight == source.Height)
+                {
+                    source.CopyTo(frameMat);
+                }
+                else
+                {
+                    Inter interpolation = scale < 1.0
+                        ? Inter.Area
+                        : Inter.Linear;
+
+                    CvInvoke.Resize(
+                        source,
+                        frameMat,
+                        new Size(outputWidth, outputHeight),
+                        0,
+                        0,
+                        interpolation);
+                }
+
+                int stride = (int)frameMat.Step;
+                if ((stride & 3) != 0)
+                {
+                    throw new InvalidOperationException(
+                        "Display frame stride is not DWORD aligned. " +
+                        "Size=" + frameMat.Width + "x" + frameMat.Height +
+                        ", Step=" + stride + ".");
+                }
+
+                Bitmap frameBitmap = new Bitmap(
+                    frameMat.Width,
+                    frameMat.Height,
+                    stride,
+                    PixelFormat.Format24bppRgb,
+                    frameMat.DataPointer);
+
+                DisplayFrame newFrame = new DisplayFrame(frameMat, frameBitmap);
+                frameMat = null;
+                DisplayFrame oldPending;
+
+                lock (displayFrameLock)
+                {
+                    oldPending = pendingDisplayFrame;
+                    pendingDisplayFrame = newFrame;
+                }
+
+                oldPending?.Dispose();
             }
-            else
+            finally
             {
-                Inter interpolation = scale < 1.0
-                    ? Inter.Area
-                    : Inter.Linear;
-
-                CvInvoke.Resize(
-                    source,
-                    frameMat,
-                    new Size(outputWidth, outputHeight),
-                    0,
-                    0,
-                    interpolation);
+                // Ownership is transferred to DisplayFrame on success. If Resize
+                // or Bitmap construction fails, release the temporary Mat here.
+                frameMat?.Dispose();
             }
-
-            Bitmap frameBitmap = new Bitmap(
-                frameMat.Width,
-                frameMat.Height,
-                (int)frameMat.Step,
-                PixelFormat.Format24bppRgb,
-                frameMat.DataPointer);
-
-            DisplayFrame newFrame = new DisplayFrame(frameMat, frameBitmap);
-            DisplayFrame oldPending;
-
-            lock (displayFrameLock)
-            {
-                oldPending = pendingDisplayFrame;
-                pendingDisplayFrame = newFrame;
-            }
-
-            oldPending?.Dispose();
         }
 
         private void DisplayPumpTick(object state)
