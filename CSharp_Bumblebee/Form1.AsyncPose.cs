@@ -32,7 +32,8 @@ namespace CSharp_Bumblebee
             poseWorkerThread = new Thread(PoseWorkerLoop)
             {
                 IsBackground = true,
-                Name = "BumblebeePoseWorker"
+                Name = "BumblebeePoseWorker",
+                Priority = ThreadPriority.BelowNormal
             };
             poseWorkerThread.Start();
         }
