@@ -14,7 +14,9 @@ namespace CSharp_Bumblebee
 {
     public partial class Form1
     {
-        private const string PoseBackendName = "ORT CPU";
+        private const int OrtIntraOpThreads = 4;
+        private const int OrtInterOpThreads = 1;
+        private const string PoseBackendName = "ORT CPU I4";
 
         private readonly object poseFrameLock = new object();
         private readonly object poseResultLock = new object();
@@ -144,9 +146,10 @@ namespace CSharp_Bumblebee
             {
                 sessionOptions = new SessionOptions
                 {
-                    // Explicit for the benchmark even though ORT currently enables
-                    // all graph optimizations by default.
-                    GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL
+                    GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+                    ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+                    IntraOpNumThreads = OrtIntraOpThreads,
+                    InterOpNumThreads = OrtInterOpThreads
                 };
 
                 session = new InferenceSession(PoseModelFile, sessionOptions);
