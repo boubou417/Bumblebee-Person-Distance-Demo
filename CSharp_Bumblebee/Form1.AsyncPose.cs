@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Windows.Forms;
 using Emgu.CV;
@@ -25,6 +26,12 @@ namespace CSharp_Bumblebee
             lock (poseResultLock)
             {
                 cachedPosePeople.Clear();
+            }
+
+            lock (poseFrameLock)
+            {
+                pendingPoseWorkItem?.Dispose();
+                pendingPoseWorkItem = null;
             }
 
             poseInferenceCounter = 0;
@@ -63,6 +70,18 @@ namespace CSharp_Bumblebee
             if (!poseWorkerRunning || source == null || source.IsEmpty)
                 return;
 
+            // YOLO is much slower than the camera. Keep at most one prepared frame
+            // waiting behind the frame currently being inferred. This prevents the
+            // capture thread from repeatedly letterboxing frames that would only be
+            // replaced before the pose worker can consume them.
+            lock (poseFrameLock)
+            {
+                if (pendingPoseWorkItem != null)
+                    return;
+            }
+
+            Stopwatch prep = Stopwatch.StartNew();
+
             float scale;
             int padX;
             int padY;
@@ -76,14 +95,28 @@ namespace CSharp_Bumblebee
                 source.Width,
                 source.Height);
 
-            PoseWorkItem oldPending;
+            bool queued = false;
+
             lock (poseFrameLock)
             {
-                oldPending = pendingPoseWorkItem;
-                pendingPoseWorkItem = item;
+                // The capture loop is single-threaded, but keep this second check so
+                // shutdown/restart races cannot leave two pending work items behind.
+                if (poseWorkerRunning && pendingPoseWorkItem == null)
+                {
+                    pendingPoseWorkItem = item;
+                    queued = true;
+                }
             }
 
-            oldPending?.Dispose();
+            prep.Stop();
+
+            if (!queued)
+            {
+                item.Dispose();
+                return;
+            }
+
+            SetPosePrepMs(prep.Elapsed.TotalMilliseconds);
             poseFrameReady.Set();
         }
 
