@@ -1,7 +1,6 @@
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
 using System.Threading;
 using System.Windows.Forms;
 using Emgu.CV;
@@ -12,9 +11,10 @@ namespace CSharp_Bumblebee
 {
     public partial class Form1
     {
-        // A single bad frame should not stop an exhibition demo. Transport/payload
-        // failures are allowed a shorter retry window than processing/display errors.
-        private const int CaptureMaxConsecutiveTransportErrors = 8;
+        // Processing/display errors are still bounded so a real software fault does
+        // not spin forever. Camera transport/payload/copy errors are retried without
+        // a stop threshold because exhibition acquisition should survive intermittent
+        // synchronized-image timeouts. GigE tuning is handled separately.
         private const int CaptureMaxConsecutiveFrameErrors = 20;
 
         private readonly object captureDiagnosticsLock = new object();
@@ -23,7 +23,6 @@ namespace CSharp_Bumblebee
         private string captureCurrentStage = "Idle";
         private string captureLastErrorStage = "None";
         private string captureLastErrorMessage = "None";
-        private string captureLogPath = string.Empty;
 
         private void backgroundWorker1_DoWork_Resilient(
             object sender,
@@ -39,7 +38,6 @@ namespace CSharp_Bumblebee
             string terminalStage = "None";
 
             BeginCaptureDiagnostics();
-            WriteCaptureLog("Capture worker started.");
 
             try
             {
@@ -74,8 +72,8 @@ namespace CSharp_Bumblebee
                         {
                             Interlocked.Increment(ref captureIncompleteFrameCount);
 
-                            // An incomplete synchronized stereo payload is a dropped
-                            // frame, not a reason to stop acquisition.
+                            // A dropped synchronized stereo set is recoverable. Release
+                            // it and wait for the next complete image set.
                             consecutiveTransportErrors = 0;
                             consecutiveFrameErrors = 0;
                             continue;
@@ -88,9 +86,8 @@ namespace CSharp_Bumblebee
                         sw.Stop();
                         SetCopyMs(sw.Elapsed.TotalMilliseconds);
 
-                        // Release camera-owned buffers as soon as the deep copies are
-                        // complete. The CPU-heavy pose/display work should not retain
-                        // Bumblebee stream buffers.
+                        // Release camera-owned buffers immediately after DeepCopy so
+                        // pose inference and display never hold transport buffers.
                         SafeDisposeImage(ref rectifiedSource);
                         SafeDisposeImage(ref disparitySource);
                         SafeReleaseImageList(ref imageList);
@@ -167,26 +164,24 @@ namespace CSharp_Bumblebee
                         if (!capImg)
                             break;
 
-                        bool tooManyTransportErrors =
-                            transportError &&
-                            consecutiveTransportErrors >= CaptureMaxConsecutiveTransportErrors;
-                        bool tooManyFrameErrors =
-                            !transportError &&
-                            consecutiveFrameErrors >= CaptureMaxConsecutiveFrameErrors;
+                        if (transportError)
+                        {
+                            // Do not stop acquisition for GetNextImageSync timeout,
+                            // incomplete stereo transport, or transient copy failure.
+                            // A short capped backoff prevents a hard disconnect from
+                            // turning into a tight CPU loop.
+                            int delayMs = Math.Min(
+                                100,
+                                10 * Math.Max(1, consecutiveTransportErrors));
+                            Thread.Sleep(delayMs);
+                            continue;
+                        }
 
-                        if (tooManyTransportErrors || tooManyFrameErrors)
+                        if (consecutiveFrameErrors >= CaptureMaxConsecutiveFrameErrors)
                         {
                             terminalException = ex;
                             terminalStage = failedStage;
                             break;
-                        }
-
-                        // Back off only for camera/transport failures. Processing
-                        // errors should simply skip the bad frame and use the next one.
-                        if (transportError)
-                        {
-                            int delayMs = Math.Min(100, 10 * consecutiveTransportErrors);
-                            Thread.Sleep(delayMs);
                         }
                     }
                     finally
@@ -219,16 +214,9 @@ namespace CSharp_Bumblebee
                 {
                     Error = terminalException,
                     Stage = terminalStage,
-                    LogPath = captureLogPath,
                     RecoverableErrors = Volatile.Read(ref captureRecoverableErrorCount),
                     IncompleteFrames = Volatile.Read(ref captureIncompleteFrameCount)
                 };
-
-                WriteCaptureLog(
-                    terminalException == null
-                        ? "Capture worker stopped normally."
-                        : "Capture worker stopped after repeated errors at stage " +
-                          terminalStage + ".");
 
                 try
                 {
@@ -276,18 +264,13 @@ namespace CSharp_Bumblebee
             if (result == null || result.Error == null)
                 return;
 
-            string logInfo = string.IsNullOrWhiteSpace(result.LogPath)
-                ? string.Empty
-                : "\r\n\r\nLog: " + result.LogPath;
-
             MessageBox.Show(
-                "Capture stopped after repeated errors.\r\n\r\n" +
+                "Capture stopped after repeated processing errors.\r\n\r\n" +
                 "Stage: " + result.Stage + "\r\n" +
                 "Type: " + result.Error.GetType().FullName + "\r\n" +
                 "Message: " + result.Error.Message + "\r\n" +
                 "Recoverable errors: " + result.RecoverableErrors + "\r\n" +
-                "Incomplete frames: " + result.IncompleteFrames +
-                logInfo,
+                "Incomplete frames: " + result.IncompleteFrames,
                 "Capture Diagnostics",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -303,23 +286,6 @@ namespace CSharp_Bumblebee
                 captureCurrentStage = "Starting";
                 captureLastErrorStage = "None";
                 captureLastErrorMessage = "None";
-                captureLogPath = string.Empty;
-
-                try
-                {
-                    string logDirectory = Path.Combine(
-                        AppDomain.CurrentDomain.BaseDirectory,
-                        "Logs");
-                    Directory.CreateDirectory(logDirectory);
-                    captureLogPath = Path.Combine(
-                        logDirectory,
-                        "capture_" + DateTime.Now.ToString("yyyyMMdd") + ".log");
-                }
-                catch
-                {
-                    // Logging must never become another reason for acquisition to stop.
-                    captureLogPath = string.Empty;
-                }
             }
         }
 
@@ -352,36 +318,8 @@ namespace CSharp_Bumblebee
                 captureLastErrorMessage = message;
             }
 
-            WriteCaptureLog(
-                "ERROR Stage=" + (stage ?? "Unknown") +
-                ", Consecutive=" + consecutiveCount +
-                Environment.NewLine +
-                (exception != null ? exception.ToString() : "Unknown error"));
-        }
-
-        private void WriteCaptureLog(string message)
-        {
-            string path;
-            lock (captureDiagnosticsLock)
-                path = captureLogPath;
-
-            if (string.IsNullOrWhiteSpace(path))
-                return;
-
-            try
-            {
-                lock (captureDiagnosticsLock)
-                {
-                    File.AppendAllText(
-                        path,
-                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") +
-                        "  " + message + Environment.NewLine,
-                        System.Text.Encoding.UTF8);
-                }
-            }
-            catch
-            {
-            }
+            // File logging is intentionally disabled for the exhibition build.
+            // Keep only lightweight in-memory diagnostics for the F3 overlay.
         }
 
         private static bool IsCaptureTransportStage(string stage)
@@ -455,7 +393,6 @@ namespace CSharp_Bumblebee
     {
         public Exception Error;
         public string Stage;
-        public string LogPath;
         public int RecoverableErrors;
         public int IncompleteFrames;
     }
