@@ -36,6 +36,8 @@ namespace CSharp_Bumblebee
                 cachedPosePeople.Clear();
             }
 
+            ResetPoseTemporalFilter();
+
             lock (poseFrameLock)
             {
                 pendingPoseWorkItem?.Dispose();
@@ -437,10 +439,15 @@ namespace CSharp_Bumblebee
                 }
             }
 
+            List<PosePerson> confirmedPeople = UpdateTemporalPoseFilter(
+                selectedPeople,
+                item.SourceWidth,
+                item.SourceHeight);
+
             lock (poseResultLock)
             {
                 cachedPosePeople.Clear();
-                cachedPosePeople.AddRange(selectedPeople);
+                cachedPosePeople.AddRange(confirmedPeople);
             }
         }
 
