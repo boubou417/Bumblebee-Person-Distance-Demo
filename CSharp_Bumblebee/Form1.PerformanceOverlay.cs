@@ -241,6 +241,8 @@ namespace CSharp_Bumblebee
                 "Pose FPS    : " + poseFps.ToString("F1") + Environment.NewLine +
                 "Pose EP     : " + PoseBackendName + Environment.NewLine +
                 "Pose SrcInt : " + PoseSourceInterval + Environment.NewLine +
+                "Pose Raw    : " + GetRawPosePeopleCount() + Environment.NewLine +
+                "Pose Valid  : " + GetStructuredPosePeopleCount() + Environment.NewLine +
                 "People      : " + GetPosePeopleCount();
 
             using (Font font = new Font("Consolas", 9.0f, FontStyle.Bold))
