@@ -139,9 +139,15 @@ namespace CSharp_Bumblebee
             int currentDisplayedCount = Volatile.Read(ref displayedFrameCounter);
             int currentPoseCount = Volatile.Read(ref poseInferenceCounter);
 
-            int cameraDelta = GetCounterDelta(currentCameraCount, lastCameraFrameCount);
-            int displayDelta = GetCounterDelta(currentDisplayedCount, lastDisplayedFrameCount);
-            int poseDelta = GetCounterDelta(currentPoseCount, lastPoseInferenceCount);
+            int cameraDelta = GetCounterDelta(
+                currentCameraCount,
+                lastCameraFrameCount);
+            int displayDelta = GetCounterDelta(
+                currentDisplayedCount,
+                lastDisplayedFrameCount);
+            int poseDelta = GetCounterDelta(
+                currentPoseCount,
+                lastPoseInferenceCount);
 
             cameraFps = cameraDelta / seconds;
             displayFps = displayDelta / seconds;
@@ -223,6 +229,7 @@ namespace CSharp_Bumblebee
 
             string state = capImg ? "RUN" : "STOP";
             string info =
+                "Mode        : LIGHT DETECTION" + Environment.NewLine +
                 "State       : " + state + Environment.NewLine +
                 "Camera FPS  : " + cameraFps.ToString("F1") + Environment.NewLine +
                 "Display FPS : " + displayFps.ToString("F1") + Environment.NewLine +
@@ -230,20 +237,23 @@ namespace CSharp_Bumblebee
                 "Capture     : " + c.ToString("F1") + " ms" + Environment.NewLine +
                 "Copy        : " + cp.ToString("F1") + " ms" + Environment.NewLine +
                 "Convert     : " + cv.ToString("F1") + " ms" + Environment.NewLine +
-                "Pose Prep   : " + prep.ToString("F1") + " ms" + Environment.NewLine +
+                "Detect Prep : " + prep.ToString("F1") + " ms" + Environment.NewLine +
                 "Tensor Prep : " + tensor.ToString("F1") + " ms" + Environment.NewLine +
                 "Inference   : " + inf.ToString("F1") + " ms" + Environment.NewLine +
-                "Pose Post   : " + post.ToString("F1") + " ms" + Environment.NewLine +
+                "Detect Post : " + post.ToString("F1") + " ms" + Environment.NewLine +
                 "Dist/Draw   : " + dist.ToString("F1") + " ms" + Environment.NewLine +
                 "BitmapQueue : " + bmp.ToString("F1") + " ms" + Environment.NewLine +
                 "UI Paint    : " + uiPaintMs.ToString("F2") + " ms" + Environment.NewLine +
                 "Process CPU : " + processCpuPercent.ToString("F1") + "%" + Environment.NewLine +
-                "Pose FPS    : " + poseFps.ToString("F1") + Environment.NewLine +
-                "Pose EP     : " + PoseBackendName + Environment.NewLine +
-                "Pose SrcInt : " + PoseSourceInterval + Environment.NewLine +
-                "Pose Raw    : " + GetRawPosePeopleCount() + Environment.NewLine +
-                "Pose Valid  : " + GetStructuredPosePeopleCount() + Environment.NewLine +
-                "People      : " + GetPosePeopleCount();
+                "Detect FPS  : " + poseFps.ToString("F1") + Environment.NewLine +
+                "Detect EP   : " + PoseBackendName + Environment.NewLine +
+                "Model       : " + GetDetectionModelLabel() + Environment.NewLine +
+                "Input Size  : " + GetDetectionInputSize() + Environment.NewLine +
+                "Detect Src  : " + PoseSourceInterval + Environment.NewLine +
+                "Det Raw     : " + GetRawPosePeopleCount() + Environment.NewLine +
+                "Det Kept    : " + GetStructuredPosePeopleCount() + Environment.NewLine +
+                "People      : " + GetPosePeopleCount() + Environment.NewLine +
+                GetCaptureDiagnosticsOverlayText();
 
             using (Font font = new Font("Consolas", 9.0f, FontStyle.Bold))
             {
