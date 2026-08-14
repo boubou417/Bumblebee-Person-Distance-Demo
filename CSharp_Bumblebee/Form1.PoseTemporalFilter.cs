@@ -7,33 +7,15 @@ namespace CSharp_Bumblebee
 {
     public partial class Form1
     {
-        // A new detection must be present in two consecutive pose inferences before
-        // it is allowed onto the exhibition overlay. This removes most one-frame
-        // false positives without changing the YOLO confidence threshold.
         private const int PoseConfirmConsecutiveHits = 2;
-
-        // Once a person has been confirmed, tolerate two missed pose updates so a
-        // brief occlusion or a single weak YOLO result does not make the skeleton blink.
         private const int PoseConfirmedMaxMisses = 2;
 
-        // Cheap anatomical gate before temporal confirmation. A real person should
-        // normally provide several keypoints including at least part of the torso.
-        private const int PoseMinimumValidKeypoints = 5;
-        private const int PoseMinimumCoreKeypoints = 2;
-
-        // Duplicate suppression is intentionally stricter than normal tracking.
-        // Two nearby real people may have overlapping boxes, but duplicate detections
-        // of the same person also place several corresponding keypoints almost on top
-        // of one another. Requiring keypoint agreement avoids over-merging crowds.
-        private const int PoseDuplicateMinComparableKeypoints = 4;
-        private const int PoseDuplicateMinComparableCoreKeypoints = 2;
-        private const double PoseDuplicateMeanKeypointRatio = 0.085;
-        private const double PoseDuplicateMeanCoreRatio = 0.070;
-        private const double PoseDuplicateCenterRatio = 0.20;
-        private const double PoseDuplicateMinimumSizeRatio = 0.50;
-        private const double PoseDuplicateStrongIou = 0.70;
-
-        private static readonly int[] PoseCoreKeypoints = { 5, 6, 11, 12 };
+        // Box-only duplicate suppression. Keep this conservative so two real people
+        // standing close together are not merged simply because their boxes overlap.
+        private const double DetectionDuplicateStrongIou = 0.72;
+        private const double DetectionDuplicateCenterRatio = 0.10;
+        private const double DetectionDuplicateMinSizeRatio = 0.55;
+        private const double DetectionTrackCenterRatio = 0.62;
 
         private readonly List<TemporalPoseTrack> temporalPoseTracks =
             new List<TemporalPoseTrack>();
@@ -63,31 +45,23 @@ namespace CSharp_Bumblebee
             {
                 foreach (PosePerson detection in detections)
                 {
-                    if (PassesPoseStructureGate(detection, imageWidth, imageHeight))
+                    if (IsValidDetectionBox(detection, imageWidth, imageHeight))
                         validDetections.Add(detection);
                 }
             }
 
-            // NMS works only on bounding boxes. A single person can occasionally
-            // survive NMS twice when one box is shifted or covers a different body
-            // extent. Use pose geometry to collapse those duplicates before tracking.
-            List<PosePerson> deduplicatedDetections = SuppressDuplicatePoseDetections(
-                validDetections,
-                imageWidth,
-                imageHeight);
+            List<PosePerson> deduplicated = SuppressDuplicateDetections(
+                validDetections);
 
-            Volatile.Write(
-                ref structuredPosePeopleCount,
-                deduplicatedDetections.Count);
+            Volatile.Write(ref structuredPosePeopleCount, deduplicated.Count);
 
-            // Age every track first. A successful match below resets Misses to zero.
             foreach (TemporalPoseTrack track in temporalPoseTracks)
             {
                 track.MatchedThisUpdate = false;
                 track.Misses++;
             }
 
-            foreach (PosePerson detection in deduplicatedDetections)
+            foreach (PosePerson detection in deduplicated)
             {
                 TemporalPoseTrack track = FindBestTemporalPoseTrack(detection);
 
@@ -102,17 +76,12 @@ namespace CSharp_Bumblebee
                         Confirmed = false,
                         MatchedThisUpdate = true
                     });
-
                     continue;
                 }
 
-                // Misses == 1 means this track was seen on the immediately preceding
-                // inference (we incremented it once at the start of this update).
-                // Anything larger breaks the consecutive-hit streak.
                 track.ConsecutiveHits = track.Misses == 1
                     ? track.ConsecutiveHits + 1
                     : 1;
-
                 track.LastPose = detection;
                 track.Misses = 0;
                 track.MatchedThisUpdate = true;
@@ -124,17 +93,11 @@ namespace CSharp_Bumblebee
                 }
             }
 
-            // Unconfirmed candidates must be consecutive, so remove them as soon as
-            // one pose update misses. Confirmed people receive a short grace period.
             temporalPoseTracks.RemoveAll(track =>
                 (!track.Confirmed && track.Misses > 0) ||
                 (track.Confirmed && track.Misses > PoseConfirmedMaxMisses));
 
-            // If an older version of the same person already became two temporal
-            // tracks, collapse them here as a second line of defense. Prefer the
-            // established/older track so downstream color and distance tracking do
-            // not jump simply because a duplicate detection appeared.
-            MergeDuplicateTemporalPoseTracks(imageWidth, imageHeight);
+            MergeDuplicateTemporalTracks();
 
             List<PosePerson> confirmedPeople = new List<PosePerson>();
             foreach (TemporalPoseTrack track in temporalPoseTracks)
@@ -146,13 +109,33 @@ namespace CSharp_Bumblebee
             return confirmedPeople;
         }
 
-        private List<PosePerson> SuppressDuplicatePoseDetections(
-            List<PosePerson> detections,
+        private bool IsValidDetectionBox(
+            PosePerson person,
             int imageWidth,
             int imageHeight)
         {
+            if (person == null || person.Box.IsEmpty)
+                return false;
+
+            Rectangle box = person.Box;
+            if (box.Width < 12 || box.Height < 20)
+                return false;
+
+            if (box.Right <= 0 || box.Bottom <= 0 ||
+                box.Left >= imageWidth || box.Top >= imageHeight)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private List<PosePerson> SuppressDuplicateDetections(
+            List<PosePerson> detections)
+        {
             List<PosePerson> kept = new List<PosePerson>();
-            if (detections == null || detections.Count == 0)
+
+            if (detections == null)
                 return kept;
 
             foreach (PosePerson candidate in detections)
@@ -161,12 +144,7 @@ namespace CSharp_Bumblebee
 
                 for (int i = 0; i < kept.Count; i++)
                 {
-                    if (AreLikelySamePosePerson(
-                        kept[i],
-                        candidate,
-                        imageWidth,
-                        imageHeight,
-                        false))
+                    if (AreLikelyDuplicateBoxes(kept[i].Box, candidate.Box, false))
                     {
                         duplicateIndex = i;
                         break;
@@ -179,355 +157,19 @@ namespace CSharp_Bumblebee
                     continue;
                 }
 
-                PosePerson existing = kept[duplicateIndex];
-                double existingQuality = GetPoseQualityScore(
-                    existing,
-                    imageWidth,
-                    imageHeight);
-                double candidateQuality = GetPoseQualityScore(
-                    candidate,
-                    imageWidth,
-                    imageHeight);
+                // Without pose keypoint confidence, prefer the larger body extent.
+                // It normally gives a more stable chest ROI for disparity distance.
+                Rectangle existingBox = kept[duplicateIndex].Box;
+                double existingArea =
+                    (double)existingBox.Width * existingBox.Height;
+                double candidateArea =
+                    (double)candidate.Box.Width * candidate.Box.Height;
 
-                if (candidateQuality > existingQuality)
+                if (candidateArea > existingArea)
                     kept[duplicateIndex] = candidate;
             }
 
             return kept;
-        }
-
-        private void MergeDuplicateTemporalPoseTracks(
-            int imageWidth,
-            int imageHeight)
-        {
-            bool merged;
-
-            do
-            {
-                merged = false;
-
-                for (int i = 0; i < temporalPoseTracks.Count && !merged; i++)
-                {
-                    TemporalPoseTrack a = temporalPoseTracks[i];
-                    if (a.LastPose == null)
-                        continue;
-
-                    for (int j = i + 1; j < temporalPoseTracks.Count; j++)
-                    {
-                        TemporalPoseTrack b = temporalPoseTracks[j];
-                        if (b.LastPose == null)
-                            continue;
-
-                        if (!AreLikelySamePosePerson(
-                            a.LastPose,
-                            b.LastPose,
-                            imageWidth,
-                            imageHeight,
-                            true))
-                        {
-                            continue;
-                        }
-
-                        TemporalPoseTrack survivor;
-                        TemporalPoseTrack loser;
-
-                        if (a.Confirmed != b.Confirmed)
-                        {
-                            survivor = a.Confirmed ? a : b;
-                            loser = a.Confirmed ? b : a;
-                        }
-                        else
-                        {
-                            survivor = a.Id <= b.Id ? a : b;
-                            loser = a.Id <= b.Id ? b : a;
-                        }
-
-                        bool loserHasFresherPose =
-                            loser.MatchedThisUpdate && !survivor.MatchedThisUpdate;
-
-                        if (!loserHasFresherPose &&
-                            loser.MatchedThisUpdate == survivor.MatchedThisUpdate)
-                        {
-                            double survivorQuality = GetPoseQualityScore(
-                                survivor.LastPose,
-                                imageWidth,
-                                imageHeight);
-                            double loserQuality = GetPoseQualityScore(
-                                loser.LastPose,
-                                imageWidth,
-                                imageHeight);
-                            loserHasFresherPose = loserQuality > survivorQuality;
-                        }
-
-                        if (loserHasFresherPose)
-                            survivor.LastPose = loser.LastPose;
-
-                        survivor.Confirmed = survivor.Confirmed || loser.Confirmed;
-                        survivor.ConsecutiveHits = Math.Max(
-                            survivor.ConsecutiveHits,
-                            loser.ConsecutiveHits);
-                        survivor.Misses = Math.Min(survivor.Misses, loser.Misses);
-                        survivor.MatchedThisUpdate =
-                            survivor.MatchedThisUpdate || loser.MatchedThisUpdate;
-
-                        temporalPoseTracks.Remove(loser);
-                        merged = true;
-                        break;
-                    }
-                }
-            }
-            while (merged);
-        }
-
-        private bool AreLikelySamePosePerson(
-            PosePerson a,
-            PosePerson b,
-            int imageWidth,
-            int imageHeight,
-            bool strict)
-        {
-            if (a == null || b == null ||
-                a.Keypoints == null || b.Keypoints == null ||
-                a.Box.IsEmpty || b.Box.IsEmpty)
-            {
-                return false;
-            }
-
-            double diagA = Math.Sqrt(
-                (double)a.Box.Width * a.Box.Width +
-                (double)a.Box.Height * a.Box.Height);
-            double diagB = Math.Sqrt(
-                (double)b.Box.Width * b.Box.Width +
-                (double)b.Box.Height * b.Box.Height);
-            double referenceDiagonal = Math.Max(40.0, Math.Max(diagA, diagB));
-
-            Point centerA = GetBoxCenter(a.Box);
-            Point centerB = GetBoxCenter(b.Box);
-            double centerDx = centerA.X - centerB.X;
-            double centerDy = centerA.Y - centerB.Y;
-            double centerDistance = Math.Sqrt(
-                centerDx * centerDx + centerDy * centerDy);
-
-            double centerLimit = referenceDiagonal *
-                (strict ? PoseDuplicateCenterRatio * 0.85 : PoseDuplicateCenterRatio);
-
-            if (centerDistance > centerLimit)
-                return false;
-
-            double areaA = Math.Max(1.0, (double)a.Box.Width * a.Box.Height);
-            double areaB = Math.Max(1.0, (double)b.Box.Width * b.Box.Height);
-            double sizeRatio = Math.Min(areaA, areaB) / Math.Max(areaA, areaB);
-            double minimumSizeRatio = strict
-                ? Math.Max(0.60, PoseDuplicateMinimumSizeRatio)
-                : PoseDuplicateMinimumSizeRatio;
-
-            int comparableCount;
-            double meanKeypointDistance = GetMeanMatchingKeypointDistance(
-                a,
-                b,
-                imageWidth,
-                imageHeight,
-                null,
-                out comparableCount);
-
-            int comparableCoreCount;
-            double meanCoreDistance = GetMeanMatchingKeypointDistance(
-                a,
-                b,
-                imageWidth,
-                imageHeight,
-                PoseCoreKeypoints,
-                out comparableCoreCount);
-
-            double iou = ComputeIntersectionOverUnion(a.Box, b.Box);
-            double keypointLimit = referenceDiagonal *
-                (strict
-                    ? PoseDuplicateMeanKeypointRatio * 0.85
-                    : PoseDuplicateMeanKeypointRatio);
-            double coreLimit = referenceDiagonal *
-                (strict
-                    ? PoseDuplicateMeanCoreRatio * 0.85
-                    : PoseDuplicateMeanCoreRatio);
-
-            bool strongKeypointMatch =
-                comparableCount >= PoseDuplicateMinComparableKeypoints &&
-                meanKeypointDistance <= keypointLimit;
-
-            bool strongCoreMatch =
-                comparableCoreCount >= PoseDuplicateMinComparableCoreKeypoints &&
-                meanCoreDistance <= coreLimit;
-
-            // This is the normal duplicate case: two detections describe nearly the
-            // same joints. Box size may differ because one prediction is more cropped.
-            if (strongKeypointMatch && strongCoreMatch)
-                return true;
-
-            // Fallback for predictions with fewer valid joints. Require very strong
-            // box overlap, similar size, and at least some matching pose geometry.
-            bool strongBoxDuplicate =
-                iou >= (strict ? 0.76 : PoseDuplicateStrongIou) &&
-                sizeRatio >= minimumSizeRatio &&
-                comparableCount >= 3 &&
-                meanKeypointDistance <= referenceDiagonal * 0.12;
-
-            return strongBoxDuplicate;
-        }
-
-        private double GetMeanMatchingKeypointDistance(
-            PosePerson a,
-            PosePerson b,
-            int imageWidth,
-            int imageHeight,
-            int[] indices,
-            out int comparableCount)
-        {
-            comparableCount = 0;
-            double totalDistance = 0;
-
-            if (a == null || b == null ||
-                a.Keypoints == null || b.Keypoints == null)
-            {
-                return double.MaxValue;
-            }
-
-            if (indices == null)
-            {
-                int count = Math.Min(a.Keypoints.Length, b.Keypoints.Length);
-                for (int i = 0; i < count; i++)
-                {
-                    AddComparableKeypointDistance(
-                        a.Keypoints[i],
-                        b.Keypoints[i],
-                        imageWidth,
-                        imageHeight,
-                        ref comparableCount,
-                        ref totalDistance);
-                }
-            }
-            else
-            {
-                foreach (int index in indices)
-                {
-                    if (index < 0 ||
-                        index >= a.Keypoints.Length ||
-                        index >= b.Keypoints.Length)
-                    {
-                        continue;
-                    }
-
-                    AddComparableKeypointDistance(
-                        a.Keypoints[index],
-                        b.Keypoints[index],
-                        imageWidth,
-                        imageHeight,
-                        ref comparableCount,
-                        ref totalDistance);
-                }
-            }
-
-            return comparableCount > 0
-                ? totalDistance / comparableCount
-                : double.MaxValue;
-        }
-
-        private void AddComparableKeypointDistance(
-            PoseKeypoint a,
-            PoseKeypoint b,
-            int imageWidth,
-            int imageHeight,
-            ref int comparableCount,
-            ref double totalDistance)
-        {
-            if (!IsValidKeypoint(a, imageWidth, imageHeight) ||
-                !IsValidKeypoint(b, imageWidth, imageHeight))
-            {
-                return;
-            }
-
-            double dx = a.X - b.X;
-            double dy = a.Y - b.Y;
-            totalDistance += Math.Sqrt(dx * dx + dy * dy);
-            comparableCount++;
-        }
-
-        private double GetPoseQualityScore(
-            PosePerson person,
-            int imageWidth,
-            int imageHeight)
-        {
-            if (person == null || person.Keypoints == null)
-                return 0;
-
-            double score = 0;
-
-            for (int i = 0; i < person.Keypoints.Length; i++)
-            {
-                PoseKeypoint keypoint = person.Keypoints[i];
-                if (!IsValidKeypoint(keypoint, imageWidth, imageHeight))
-                    continue;
-
-                score += 10.0 + Math.Max(0.0, keypoint.Confidence) * 2.0;
-            }
-
-            foreach (int index in PoseCoreKeypoints)
-            {
-                if (index < person.Keypoints.Length &&
-                    IsValidKeypoint(
-                        person.Keypoints[index],
-                        imageWidth,
-                        imageHeight))
-                {
-                    score += 5.0;
-                }
-            }
-
-            return score;
-        }
-
-        private bool PassesPoseStructureGate(
-            PosePerson person,
-            int imageWidth,
-            int imageHeight)
-        {
-            if (person == null ||
-                person.Keypoints == null ||
-                person.Keypoints.Length < KeypointCount ||
-                person.Box.IsEmpty)
-            {
-                return false;
-            }
-
-            int validCount = 0;
-            for (int i = 0; i < person.Keypoints.Length; i++)
-            {
-                if (IsValidKeypoint(person.Keypoints[i], imageWidth, imageHeight))
-                    validCount++;
-            }
-
-            if (validCount < PoseMinimumValidKeypoints)
-                return false;
-
-            // COCO pose core: left/right shoulder (5,6), left/right hip (11,12).
-            int coreCount = 0;
-            if (IsValidKeypoint(person.Keypoints[5], imageWidth, imageHeight))
-                coreCount++;
-            if (IsValidKeypoint(person.Keypoints[6], imageWidth, imageHeight))
-                coreCount++;
-            if (IsValidKeypoint(person.Keypoints[11], imageWidth, imageHeight))
-                coreCount++;
-            if (IsValidKeypoint(person.Keypoints[12], imageWidth, imageHeight))
-                coreCount++;
-
-            if (coreCount < PoseMinimumCoreKeypoints)
-                return false;
-
-            // Require at least one shoulder. This rejects many object-shaped false
-            // positives while still allowing a partially occluded or seated person.
-            bool hasShoulder =
-                IsValidKeypoint(person.Keypoints[5], imageWidth, imageHeight) ||
-                IsValidKeypoint(person.Keypoints[6], imageWidth, imageHeight);
-
-            return hasShoulder;
         }
 
         private TemporalPoseTrack FindBestTemporalPoseTrack(PosePerson detection)
@@ -554,17 +196,18 @@ namespace CSharp_Bumblebee
                         Math.Max(previousBox.Width, previousBox.Height),
                         Math.Max(detection.Box.Width, detection.Box.Height)));
 
-                double maxCenterDistance = referenceSize * 0.70;
-                double iou = ComputeIntersectionOverUnion(previousBox, detection.Box);
+                double maxCenterDistance =
+                    referenceSize * DetectionTrackCenterRatio;
+                double iou = ComputeIntersectionOverUnion(
+                    previousBox,
+                    detection.Box);
 
-                // Either meaningful overlap or a reasonably small center movement is
-                // enough to match. This works for walking people without requiring a
-                // heavyweight tracker.
-                if (iou < 0.08 && centerDistance > maxCenterDistance)
+                if (iou < 0.05 && centerDistance > maxCenterDistance)
                     continue;
 
-                double normalizedDistance = centerDistance / maxCenterDistance;
-                double score = iou * 2.0 - normalizedDistance * 0.35;
+                double normalizedDistance =
+                    centerDistance / Math.Max(1.0, maxCenterDistance);
+                double score = iou * 2.2 - normalizedDistance * 0.40;
 
                 if (score > bestScore)
                 {
@@ -576,6 +219,134 @@ namespace CSharp_Bumblebee
             return bestTrack;
         }
 
+        private void MergeDuplicateTemporalTracks()
+        {
+            bool merged;
+
+            do
+            {
+                merged = false;
+
+                for (int i = 0; i < temporalPoseTracks.Count && !merged; i++)
+                {
+                    TemporalPoseTrack a = temporalPoseTracks[i];
+                    if (a.LastPose == null)
+                        continue;
+
+                    for (int j = i + 1; j < temporalPoseTracks.Count; j++)
+                    {
+                        TemporalPoseTrack b = temporalPoseTracks[j];
+                        if (b.LastPose == null)
+                            continue;
+
+                        if (!AreLikelyDuplicateBoxes(
+                            a.LastPose.Box,
+                            b.LastPose.Box,
+                            true))
+                        {
+                            continue;
+                        }
+
+                        TemporalPoseTrack survivor;
+                        TemporalPoseTrack loser;
+
+                        if (a.Confirmed != b.Confirmed)
+                        {
+                            survivor = a.Confirmed ? a : b;
+                            loser = a.Confirmed ? b : a;
+                        }
+                        else
+                        {
+                            // Preserve the older identity where possible so the
+                            // presentation color remains stable after a duplicate.
+                            survivor = a.Id <= b.Id ? a : b;
+                            loser = a.Id <= b.Id ? b : a;
+                        }
+
+                        if (loser.MatchedThisUpdate && !survivor.MatchedThisUpdate)
+                            survivor.LastPose = loser.LastPose;
+
+                        survivor.Confirmed = survivor.Confirmed || loser.Confirmed;
+                        survivor.ConsecutiveHits = Math.Max(
+                            survivor.ConsecutiveHits,
+                            loser.ConsecutiveHits);
+                        survivor.Misses = Math.Min(
+                            survivor.Misses,
+                            loser.Misses);
+                        survivor.MatchedThisUpdate =
+                            survivor.MatchedThisUpdate || loser.MatchedThisUpdate;
+
+                        temporalPoseTracks.Remove(loser);
+                        merged = true;
+                        break;
+                    }
+                }
+            }
+            while (merged);
+        }
+
+        private bool AreLikelyDuplicateBoxes(
+            Rectangle a,
+            Rectangle b,
+            bool strict)
+        {
+            if (a.IsEmpty || b.IsEmpty)
+                return false;
+
+            double areaA = Math.Max(1.0, (double)a.Width * a.Height);
+            double areaB = Math.Max(1.0, (double)b.Width * b.Height);
+            double sizeRatio = Math.Min(areaA, areaB) / Math.Max(areaA, areaB);
+            double iou = ComputeIntersectionOverUnion(a, b);
+
+            Rectangle intersection = Rectangle.Intersect(a, b);
+            double overlapOverSmaller = intersection.IsEmpty
+                ? 0
+                : ((double)intersection.Width * intersection.Height) /
+                  Math.Min(areaA, areaB);
+
+            Point centerA = GetBoxCenter(a);
+            Point centerB = GetBoxCenter(b);
+            double dx = centerA.X - centerB.X;
+            double dy = centerA.Y - centerB.Y;
+            double centerDistance = Math.Sqrt(dx * dx + dy * dy);
+
+            double diagonalA = Math.Sqrt(
+                (double)a.Width * a.Width + (double)a.Height * a.Height);
+            double diagonalB = Math.Sqrt(
+                (double)b.Width * b.Width + (double)b.Height * b.Height);
+            double referenceDiagonal = Math.Max(
+                40.0,
+                Math.Max(diagonalA, diagonalB));
+
+            double strongIou = strict
+                ? 0.80
+                : DetectionDuplicateStrongIou;
+            double centerLimit = referenceDiagonal *
+                (strict
+                    ? DetectionDuplicateCenterRatio * 0.85
+                    : DetectionDuplicateCenterRatio);
+            double minimumSizeRatio = strict
+                ? 0.65
+                : DetectionDuplicateMinSizeRatio;
+
+            if (iou >= strongIou && sizeRatio >= minimumSizeRatio)
+                return true;
+
+            // Catch the common nested-box case where one prediction covers most of
+            // the same person but IoU stays modest because its extent is smaller.
+            bool nestedDuplicate =
+                overlapOverSmaller >= (strict ? 0.82 : 0.72) &&
+                centerDistance <= centerLimit * 1.35 &&
+                sizeRatio >= (strict ? 0.55 : 0.42);
+
+            if (nestedDuplicate)
+                return true;
+
+            return centerDistance <= centerLimit &&
+                   sizeRatio >= (strict ? 0.75 : 0.68) &&
+                   iou >= (strict ? 0.55 : 0.42);
+        }
+
         private static Point GetBoxCenter(Rectangle box)
         {
             return new Point(
@@ -583,7 +354,9 @@ namespace CSharp_Bumblebee
                 box.Y + box.Height / 2);
         }
 
-        private static double ComputeIntersectionOverUnion(Rectangle a, Rectangle b)
+        private static double ComputeIntersectionOverUnion(
+            Rectangle a,
+            Rectangle b)
         {
             Rectangle intersection = Rectangle.Intersect(a, b);
             if (intersection.IsEmpty)
