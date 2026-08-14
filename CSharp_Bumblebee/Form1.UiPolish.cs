@@ -11,24 +11,19 @@ namespace CSharp_Bumblebee
     {
         private readonly MCvScalar[] personPalette =
         {
-            // BGR colors chosen to remain bright and easy to distinguish on camera images.
-            new MCvScalar(118, 230, 0),   // emerald
-            new MCvScalar(212, 188, 0),   // cyan
-            new MCvScalar(0, 152, 255),   // orange
-            new MCvScalar(99, 30, 233),   // pink
-            new MCvScalar(7, 193, 255),   // amber
-            new MCvScalar(245, 165, 66),  // blue
-            new MCvScalar(188, 71, 171),  // violet
-            new MCvScalar(57, 220, 205)   // lime
+            new MCvScalar(118, 230, 0),
+            new MCvScalar(212, 188, 0),
+            new MCvScalar(0, 152, 255),
+            new MCvScalar(99, 30, 233),
+            new MCvScalar(7, 193, 255),
+            new MCvScalar(245, 165, 66),
+            new MCvScalar(188, 71, 171),
+            new MCvScalar(57, 220, 205)
         };
 
-        // Keep debug visible while tuning. F3 instantly toggles it for exhibition/demo mode.
         private bool showDebugOverlay = true;
         private bool uiPolishInitialized;
 
-        // Use managed dragging instead of sending WM_NCLBUTTONDOWN immediately.
-        // The native drag message consumed the first click while the window was normal,
-        // which prevented WinForms from receiving the second click needed for maximize.
         private bool titleDragActive;
         private Point titleDragCursorStart;
         private Point titleDragFormStart;
@@ -45,11 +40,11 @@ namespace CSharp_Bumblebee
             ConfigurePolishedTitleBarInput(titleBar);
             ConfigurePolishedTitleBarInput(titleLabel);
 
-            // The title panel already has a DoubleClick handler in Form1.cs.
-            // The label receives mouse messages itself, so explicitly give it
-            // the same maximize/restore action.
             if (titleLabel != null)
+            {
+                titleLabel.Text = "Teledyne FLIR BumbleBee Demo  ·  Lightweight Detection";
                 titleLabel.DoubleClick += (s, e) => ToggleMaximize();
+            }
 
             ApplyExhibitionStyle();
         }
@@ -59,9 +54,6 @@ namespace CSharp_Bumblebee
             if (control == null)
                 return;
 
-            // Remove the old handler that immediately called SendMessage(HTCAPTION).
-            // That behavior allowed dragging, but swallowed the first click of a
-            // double-click while the window was in its normal state.
             control.MouseDown -= TitleBar_MouseDown;
             control.MouseDown += PolishedTitleBar_MouseDown;
             control.MouseMove += PolishedTitleBar_MouseMove;
@@ -90,8 +82,6 @@ namespace CSharp_Bumblebee
             int dx = cursor.X - titleDragCursorStart.X;
             int dy = cursor.Y - titleDragCursorStart.Y;
 
-            // Ignore tiny movements so a normal click/double-click does not make
-            // the window visibly jump by one or two pixels.
             if (Math.Abs(dx) < 3 && Math.Abs(dy) < 3)
                 return;
 
@@ -158,10 +148,17 @@ namespace CSharp_Bumblebee
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(25, 118, 210);
             button.FlatAppearance.MouseDownBackColor = Color.FromArgb(20, 96, 171);
 
-            // Rounded action buttons give the header a cleaner exhibition look.
             if (button.Width > 0 && button.Height > 0)
+            {
                 button.Region = Region.FromHrgn(
-                    CreateRoundRectRgn(0, 0, button.Width, button.Height, 12, 12));
+                    CreateRoundRectRgn(
+                        0,
+                        0,
+                        button.Width,
+                        button.Height,
+                        12,
+                        12));
+            }
         }
 
         private void Form1_UiPolishKeyDown(object sender, KeyEventArgs e)
@@ -195,7 +192,8 @@ namespace CSharp_Bumblebee
         private DistanceTrack FindMatchedTrack(Point center)
         {
             DistanceTrack bestTrack = null;
-            double bestDistanceSquared = DistanceTrackMatchPixels * DistanceTrackMatchPixels;
+            double bestDistanceSquared =
+                DistanceTrackMatchPixels * DistanceTrackMatchPixels;
 
             foreach (DistanceTrack track in distanceTracks)
             {
@@ -217,9 +215,9 @@ namespace CSharp_Bumblebee
         }
 
         /// <summary>
-        /// Draw a presentation layer over the existing pose rendering. The underlying
-        /// tracking/distance code remains unchanged, while each tracked person receives
-        /// a stable color based on DistanceTrack.Id.
+        /// Lightweight presentation layer. The AI worker now returns only person
+        /// boxes; the existing distance pipeline still updates a chest/body-center
+        /// distance track before this overlay is rendered.
         /// </summary>
         private void ApplyUiPolishOverlay(Mat mat)
         {
@@ -231,12 +229,25 @@ namespace CSharp_Bumblebee
 
             foreach (PosePerson person in people)
             {
-                Point center = GetTorsoCenter(person, mat.Width, mat.Height);
+                Rectangle box = ClampRect(
+                    person.Box,
+                    mat.Width,
+                    mat.Height);
+
+                if (box.IsEmpty)
+                    continue;
+
+                Point center = new Point(
+                    box.X + box.Width / 2,
+                    box.Y + box.Height / 2);
+
                 DistanceTrack track = FindMatchedTrack(center);
-                int trackId = track != null ? track.Id : fallbackTrackId++;
+                int trackId = track != null
+                    ? track.Id
+                    : fallbackTrackId++;
                 MCvScalar color = GetPersonColor(trackId);
 
-                DrawPresentationSkeleton(mat, person.Keypoints, color);
+                DrawPresentationPersonBox(mat, box, color);
 
                 CvInvoke.Circle(
                     mat,
@@ -246,57 +257,69 @@ namespace CSharp_Bumblebee
                     -1,
                     LineType.AntiAlias);
 
-                if (track != null && track.HasDistance && track.SmoothedDistance > 0)
-                    DrawDistanceBadge(mat, center, track.SmoothedDistance, color);
+                if (track != null &&
+                    track.HasDistance &&
+                    track.SmoothedDistance > 0)
+                {
+                    DrawDistanceBadge(
+                        mat,
+                        center,
+                        track.SmoothedDistance,
+                        color);
+                }
             }
         }
 
-        private void DrawPresentationSkeleton(
+        private void DrawPresentationPersonBox(
             Mat mat,
-            PoseKeypoint[] keypoints,
+            Rectangle box,
             MCvScalar color)
         {
-            int lineThickness = Math.Max(2, fontThick + 2);
-            int jointRadius = Math.Max(circleSize + 1, 3);
+            int thickness = Math.Max(2, fontThick + 2);
 
-            for (int i = 0; i < SkeletonEdges.GetLength(0); i++)
+            CvInvoke.Rectangle(
+                mat,
+                box,
+                color,
+                thickness,
+                LineType.AntiAlias);
+
+            // Small exhibition-style label. It intentionally avoids confidence text
+            // so the display stays clean and uses no additional detection bookkeeping.
+            int labelHeight = Math.Max(20, 16 + fontThick * 2);
+            int labelWidth = 72;
+            int labelY = Math.Max(0, box.Top - labelHeight);
+            Rectangle labelRect = new Rectangle(
+                box.Left,
+                labelY,
+                Math.Min(labelWidth, Math.Max(1, mat.Width - box.Left)),
+                Math.Min(labelHeight, Math.Max(1, mat.Height - labelY)));
+
+            if (!labelRect.IsEmpty)
             {
-                PoseKeypoint a = keypoints[SkeletonEdges[i, 0]];
-                PoseKeypoint b = keypoints[SkeletonEdges[i, 1]];
-
-                if (!IsValidKeypoint(a, mat.Width, mat.Height) ||
-                    !IsValidKeypoint(b, mat.Width, mat.Height))
-                    continue;
-
-                CvInvoke.Line(
+                CvInvoke.Rectangle(
                     mat,
-                    new Point((int)a.X, (int)a.Y),
-                    new Point((int)b.X, (int)b.Y),
+                    labelRect,
+                    new MCvScalar(22, 26, 32),
+                    -1);
+                CvInvoke.Rectangle(
+                    mat,
+                    labelRect,
                     color,
-                    lineThickness,
-                    LineType.AntiAlias);
-            }
+                    Math.Max(1, fontThick));
 
-            foreach (PoseKeypoint point in keypoints)
-            {
-                if (!IsValidKeypoint(point, mat.Width, mat.Height))
-                    continue;
+                Point textOrigin = new Point(
+                    labelRect.X + 6,
+                    labelRect.Y + labelRect.Height - 6);
 
-                CvInvoke.Circle(
+                CvInvoke.PutText(
                     mat,
-                    new Point((int)point.X, (int)point.Y),
-                    jointRadius,
-                    color,
-                    -1,
-                    LineType.AntiAlias);
-
-                // A tiny white center gives joints definition on both bright and dark clothing.
-                CvInvoke.Circle(
-                    mat,
-                    new Point((int)point.X, (int)point.Y),
-                    Math.Max(1, jointRadius / 3),
-                    new MCvScalar(245, 245, 245),
-                    -1,
+                    "PERSON",
+                    textOrigin,
+                    FontFace.HersheySimplex,
+                    0.42,
+                    new MCvScalar(255, 255, 255),
+                    1,
                     LineType.AntiAlias);
             }
         }
@@ -317,8 +340,12 @@ namespace CSharp_Bumblebee
             int badgeX = center.X + 8;
             int badgeY = center.Y - badgeHeight - 6;
 
-            badgeX = Math.Max(2, Math.Min(mat.Width - badgeWidth - 2, badgeX));
-            badgeY = Math.Max(2, Math.Min(mat.Height - badgeHeight - 2, badgeY));
+            badgeX = Math.Max(
+                2,
+                Math.Min(mat.Width - badgeWidth - 2, badgeX));
+            badgeY = Math.Max(
+                2,
+                Math.Min(mat.Height - badgeHeight - 2, badgeY));
 
             Rectangle badge = new Rectangle(
                 badgeX,
@@ -326,9 +353,16 @@ namespace CSharp_Bumblebee
                 badgeWidth,
                 badgeHeight);
 
-            // The filled panel intentionally covers the legacy white distance text below it.
-            CvInvoke.Rectangle(mat, badge, new MCvScalar(22, 26, 32), -1);
-            CvInvoke.Rectangle(mat, badge, color, Math.Max(1, fontThick + 1));
+            CvInvoke.Rectangle(
+                mat,
+                badge,
+                new MCvScalar(22, 26, 32),
+                -1);
+            CvInvoke.Rectangle(
+                mat,
+                badge,
+                color,
+                Math.Max(1, fontThick + 1));
 
             Point textOrigin = new Point(
                 badge.X + (int)Math.Round(9 * sizeScale),
