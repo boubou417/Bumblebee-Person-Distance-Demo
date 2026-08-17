@@ -15,11 +15,11 @@ namespace CSharp_Bumblebee
 
         private int lastCameraFrameCount;
         private int lastDisplayedFrameCount;
-        private int lastPoseInferenceCount;
+        private int lastDetectionInferenceCount;
 
         private double cameraFps;
         private double displayFps;
-        private double poseFps;
+        private double detectionFps;
         private double frameMs;
         private double uiPaintMs;
         private double processCpuPercent;
@@ -30,10 +30,10 @@ namespace CSharp_Bumblebee
         private double captureMs;
         private double copyMs;
         private double convertMs;
-        private double posePrepMs;
+        private double detectionPrepMs;
         private double tensorPrepMs;
         private double inferenceMs;
-        private double posePostMs;
+        private double detectionPostMs;
         private double distanceRenderMs;
         private double bitmapQueueMs;
 
@@ -49,9 +49,10 @@ namespace CSharp_Bumblebee
             if (performanceTimer != null)
                 return;
 
-            lastCameraFrameCount = Volatile.Read(ref poseFrameCounter);
+            lastCameraFrameCount = Volatile.Read(ref cameraFrameCounter);
             lastDisplayedFrameCount = Volatile.Read(ref displayedFrameCounter);
-            lastPoseInferenceCount = Volatile.Read(ref poseInferenceCounter);
+            lastDetectionInferenceCount =
+                Volatile.Read(ref detectionInferenceCounter);
 
             performanceClock.Restart();
             lastProcessCpuTime = currentProcess.TotalProcessorTime;
@@ -93,10 +94,10 @@ namespace CSharp_Bumblebee
                 convertMs = SmoothTiming(convertMs, value);
         }
 
-        private void SetPosePrepMs(double value)
+        private void SetDetectionPrepMs(double value)
         {
             lock (profilingLock)
-                posePrepMs = SmoothTiming(posePrepMs, value);
+                detectionPrepMs = SmoothTiming(detectionPrepMs, value);
         }
 
         private void SetTensorPrepMs(double value)
@@ -111,10 +112,10 @@ namespace CSharp_Bumblebee
                 inferenceMs = SmoothTiming(inferenceMs, value);
         }
 
-        private void SetPosePostMs(double value)
+        private void SetDetectionPostMs(double value)
         {
             lock (profilingLock)
-                posePostMs = SmoothTiming(posePostMs, value);
+                detectionPostMs = SmoothTiming(detectionPostMs, value);
         }
 
         private void SetDistanceRenderMs(double value)
@@ -135,9 +136,10 @@ namespace CSharp_Bumblebee
             if (seconds <= 0)
                 return;
 
-            int currentCameraCount = Volatile.Read(ref poseFrameCounter);
+            int currentCameraCount = Volatile.Read(ref cameraFrameCounter);
             int currentDisplayedCount = Volatile.Read(ref displayedFrameCounter);
-            int currentPoseCount = Volatile.Read(ref poseInferenceCounter);
+            int currentDetectionCount =
+                Volatile.Read(ref detectionInferenceCounter);
 
             int cameraDelta = GetCounterDelta(
                 currentCameraCount,
@@ -145,13 +147,13 @@ namespace CSharp_Bumblebee
             int displayDelta = GetCounterDelta(
                 currentDisplayedCount,
                 lastDisplayedFrameCount);
-            int poseDelta = GetCounterDelta(
-                currentPoseCount,
-                lastPoseInferenceCount);
+            int detectionDelta = GetCounterDelta(
+                currentDetectionCount,
+                lastDetectionInferenceCount);
 
             cameraFps = cameraDelta / seconds;
             displayFps = displayDelta / seconds;
-            poseFps = poseDelta / seconds;
+            detectionFps = detectionDelta / seconds;
             frameMs = displayFps > 0 ? 1000.0 / displayFps : 0;
 
             DateTime now = DateTime.UtcNow;
@@ -174,7 +176,7 @@ namespace CSharp_Bumblebee
             lastCpuSampleTime = now;
             lastCameraFrameCount = currentCameraCount;
             lastDisplayedFrameCount = currentDisplayedCount;
-            lastPoseInferenceCount = currentPoseCount;
+            lastDetectionInferenceCount = currentDetectionCount;
             performanceClock.Restart();
 
             if (!IsDisposed && IsHandleCreated)
@@ -204,27 +206,27 @@ namespace CSharp_Bumblebee
 
             uiPaintClock.Restart();
 
-            double c;
-            double cp;
-            double cv;
+            double capture;
+            double copy;
+            double convert;
             double prep;
             double tensor;
-            double inf;
+            double inference;
             double post;
-            double dist;
-            double bmp;
+            double distance;
+            double bitmap;
 
             lock (profilingLock)
             {
-                c = captureMs;
-                cp = copyMs;
-                cv = convertMs;
-                prep = posePrepMs;
+                capture = captureMs;
+                copy = copyMs;
+                convert = convertMs;
+                prep = detectionPrepMs;
                 tensor = tensorPrepMs;
-                inf = inferenceMs;
-                post = posePostMs;
-                dist = distanceRenderMs;
-                bmp = bitmapQueueMs;
+                inference = inferenceMs;
+                post = detectionPostMs;
+                distance = distanceRenderMs;
+                bitmap = bitmapQueueMs;
             }
 
             string state = capImg ? "RUN" : "STOP";
@@ -234,25 +236,25 @@ namespace CSharp_Bumblebee
                 "Camera FPS  : " + cameraFps.ToString("F1") + Environment.NewLine +
                 "Display FPS : " + displayFps.ToString("F1") + Environment.NewLine +
                 "Frame       : " + frameMs.ToString("F1") + " ms" + Environment.NewLine +
-                "Capture     : " + c.ToString("F1") + " ms" + Environment.NewLine +
-                "Copy        : " + cp.ToString("F1") + " ms" + Environment.NewLine +
-                "Convert     : " + cv.ToString("F1") + " ms" + Environment.NewLine +
+                "Capture     : " + capture.ToString("F1") + " ms" + Environment.NewLine +
+                "Copy        : " + copy.ToString("F1") + " ms" + Environment.NewLine +
+                "Convert     : " + convert.ToString("F1") + " ms" + Environment.NewLine +
                 "Detect Prep : " + prep.ToString("F1") + " ms" + Environment.NewLine +
                 "Tensor Prep : " + tensor.ToString("F1") + " ms" + Environment.NewLine +
-                "Inference   : " + inf.ToString("F1") + " ms" + Environment.NewLine +
+                "Inference   : " + inference.ToString("F1") + " ms" + Environment.NewLine +
                 "Detect Post : " + post.ToString("F1") + " ms" + Environment.NewLine +
-                "Dist/Draw   : " + dist.ToString("F1") + " ms" + Environment.NewLine +
-                "BitmapQueue : " + bmp.ToString("F1") + " ms" + Environment.NewLine +
+                "Dist/Draw   : " + distance.ToString("F1") + " ms" + Environment.NewLine +
+                "BitmapQueue : " + bitmap.ToString("F1") + " ms" + Environment.NewLine +
                 "UI Paint    : " + uiPaintMs.ToString("F2") + " ms" + Environment.NewLine +
                 "Process CPU : " + processCpuPercent.ToString("F1") + "%" + Environment.NewLine +
-                "Detect FPS  : " + poseFps.ToString("F1") + Environment.NewLine +
-                "Detect EP   : " + PoseBackendName + Environment.NewLine +
+                "Detect FPS  : " + detectionFps.ToString("F1") + Environment.NewLine +
+                "Detect EP   : " + DetectionBackendName + Environment.NewLine +
                 "Model       : " + GetDetectionModelLabel() + Environment.NewLine +
                 "Input Size  : " + GetDetectionInputSize() + Environment.NewLine +
-                "Detect Src  : " + PoseSourceInterval + Environment.NewLine +
-                "Det Raw     : " + GetRawPosePeopleCount() + Environment.NewLine +
-                "Det Kept    : " + GetStructuredPosePeopleCount() + Environment.NewLine +
-                "People      : " + GetPosePeopleCount() + Environment.NewLine +
+                "Detect Src  : " + DetectionSourceInterval + Environment.NewLine +
+                "Det Raw     : " + GetRawDetectionPeopleCount() + Environment.NewLine +
+                "Det Kept    : " + GetKeptDetectionPeopleCount() + Environment.NewLine +
+                "People      : " + GetDetectionPeopleCount() + Environment.NewLine +
                 GetCaptureDiagnosticsOverlayText();
 
             using (Font font = new Font("Consolas", 9.0f, FontStyle.Bold))
