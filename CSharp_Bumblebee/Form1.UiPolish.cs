@@ -42,7 +42,8 @@ namespace CSharp_Bumblebee
 
             if (titleLabel != null)
             {
-                titleLabel.Text = "Teledyne FLIR BumbleBee Demo  ·  Lightweight Detection";
+                titleLabel.Text =
+                    "Teledyne FLIR BumbleBee Demo  ·  Lightweight Detection";
                 titleLabel.DoubleClick += (s, e) => ToggleMaximize();
             }
 
@@ -214,32 +215,28 @@ namespace CSharp_Bumblebee
             return bestTrack;
         }
 
-        /// <summary>
-        /// Lightweight presentation layer. The AI worker now returns only person
-        /// boxes; the existing distance pipeline still updates a chest/body-center
-        /// distance track before this overlay is rendered.
-        /// </summary>
         private void ApplyUiPolishOverlay(Mat mat)
         {
             if (mat == null || mat.IsEmpty)
                 return;
 
-            var people = GetPoseSnapshot();
+            var detections = GetDetectionSnapshot();
             int fallbackTrackId = 1;
 
-            foreach (PosePerson person in people)
+            foreach (PersonDetection detection in detections)
             {
                 Rectangle box = ClampRect(
-                    person.Box,
+                    detection.Box,
                     mat.Width,
                     mat.Height);
 
                 if (box.IsEmpty)
                     continue;
 
-                Point center = new Point(
-                    box.X + box.Width / 2,
-                    box.Y + box.Height / 2);
+                Point center = GetDetectionCenter(
+                    box,
+                    mat.Width,
+                    mat.Height);
 
                 DistanceTrack track = FindMatchedTrack(center);
                 int trackId = track != null
@@ -284,8 +281,6 @@ namespace CSharp_Bumblebee
                 thickness,
                 LineType.AntiAlias);
 
-            // Small exhibition-style label. It intentionally avoids confidence text
-            // so the display stays clean and uses no additional detection bookkeeping.
             int labelHeight = Math.Max(20, 16 + fontThick * 2);
             int labelWidth = 72;
             int labelY = Math.Max(0, box.Top - labelHeight);
