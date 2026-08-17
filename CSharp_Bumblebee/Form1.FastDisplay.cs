@@ -101,10 +101,6 @@ namespace CSharp_Bumblebee
 
         private static int Align24BppWidth(int width)
         {
-            // Bitmap(width, height, stride, Format24bppRgb) requires a
-            // DWORD-aligned stride. An OpenCV CV_8UC3 Mat normally has
-            // stride = width * 3, so keeping width divisible by four guarantees
-            // a stride divisible by four as well.
             if (width < 4)
                 return width;
 
@@ -119,9 +115,9 @@ namespace CSharp_Bumblebee
 
             EnsureFastDisplayPump();
 
-            // Add the exhibition presentation layer at native camera resolution,
-            // then resize once for the PictureBox. This keeps colored skeletons,
-            // anti-aliased joints and distance badges crisp without adding UI work.
+            // Draw the lightweight exhibition overlay at native camera resolution,
+            // then resize once for the PictureBox. This keeps colored person boxes
+            // and distance badges crisp without moving drawing work to the UI thread.
             ApplyUiPolishOverlay(source);
 
             int targetWidth = Volatile.Read(ref displayTargetWidth);
@@ -140,12 +136,8 @@ namespace CSharp_Bumblebee
             int outputWidth = Math.Max(1, (int)Math.Round(source.Width * scale));
             int outputHeight = Math.Max(1, (int)Math.Round(source.Height * scale));
 
-            // On the first frame the target size can still be the native camera
-            // size. After the UI has initialized, the second frame may use a
-            // non-DWORD-aligned PictureBox width. That produces a CV_8UC3 Mat
-            // whose Step is not valid for the GDI+ 24-bpp Bitmap constructor.
-            // Align the display width before Resize so the zero-copy Bitmap stays
-            // valid without adding an expensive row-by-row copy.
+            // GDI+ Format24bppRgb requires a DWORD-aligned stride. Aligning the
+            // resized width keeps the zero-copy Bitmap valid without a row copy.
             int alignedWidth = Align24BppWidth(outputWidth);
             if (alignedWidth != outputWidth && alignedWidth >= 4)
             {
@@ -209,8 +201,6 @@ namespace CSharp_Bumblebee
             }
             finally
             {
-                // Ownership is transferred to DisplayFrame on success. If Resize
-                // or Bitmap construction fails, release the temporary Mat here.
                 frameMat?.Dispose();
             }
         }
@@ -220,9 +210,6 @@ namespace CSharp_Bumblebee
             if (!displayPumpRunning || IsDisposed || !IsHandleCreated)
                 return;
 
-            // Keep at most one UI callback pending. A faster timer therefore does
-            // not accumulate stale BeginInvoke work if the UI thread is momentarily
-            // busy; the next callback simply presents the latest available frame.
             if (Interlocked.CompareExchange(ref displayPumpInvokePending, 1, 0) != 0)
                 return;
 
