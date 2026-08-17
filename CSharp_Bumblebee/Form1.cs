@@ -1,15 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Emgu.CV;
-using Emgu.CV.CvEnum;
-using Emgu.CV.Dnn;
-using Emgu.CV.Structure;
-using Emgu.CV.Util;
 using SpinnakerNET;
 using SpinnakerNET.GenApi;
 
@@ -29,30 +24,14 @@ namespace CSharp_Bumblebee
         [DllImport("Gdi32.dll", EntryPoint = "CreateRoundRectRgn")]
         private static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int ew, int eh);
 
-        private const int YoloSize = 512;
-        private const string PoseModelFile = "yolov8n-pose-512.onnx";
         private const float ConfidenceThreshold = 0.50f;
-        private const float KeypointThreshold = 0.35f;
         private const float NmsThreshold = 0.45f;
-        private const int PoseOutputChannels = 56;
-        private const int KeypointCount = 17;
-
-        // Camera/display can run independently from pose inference.
-        // Queue a fresh 512x512 pose source every second displayed camera frame.
-        private const int PoseSourceInterval = 2;
+        private const int DetectionSourceInterval = 2;
 
         private const double DistanceEmaAlpha = 0.25;
         private const double DistanceJumpThresholdMeters = 0.75;
         private const int DistanceTrackMaxMissedFrames = 8;
         private const int DistanceTrackMatchPixels = 140;
-
-        private static readonly int[,] SkeletonEdges =
-        {
-            { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 4 },
-            { 5, 6 }, { 5, 7 }, { 7, 9 }, { 6, 8 }, { 8, 10 },
-            { 5, 11 }, { 6, 12 }, { 11, 12 },
-            { 11, 13 }, { 13, 15 }, { 12, 14 }, { 14, 16 }
-        };
 
         private Panel titleBar;
         private Label titleLabel;
@@ -74,9 +53,9 @@ namespace CSharp_Bumblebee
         private int fontThick;
 
         private readonly List<DistanceTrack> distanceTracks = new List<DistanceTrack>();
-        private readonly List<PosePerson> cachedPosePeople = new List<PosePerson>();
+        private readonly List<PersonDetection> cachedDetections = new List<PersonDetection>();
         private int nextDistanceTrackId = 1;
-        private int poseFrameCounter;
+        private int cameraFrameCounter;
 
         public Form1()
         {
@@ -108,6 +87,7 @@ namespace CSharp_Bumblebee
 
             Load += Form1_Load;
             SizeChanged += Form1_SizeChanged;
+            FormClosing += Form1_FormClosing;
             pBoxLogo.Image = Bitmap.FromFile("APO_LOGO2.jpg");
         }
 
@@ -292,11 +272,17 @@ namespace CSharp_Bumblebee
             {
                 distanceTracks.Clear();
                 nextDistanceTrackId = 1;
-                poseFrameCounter = 0;
+                cameraFrameCounter = 0;
                 capImg = true;
                 capImgComplete = false;
 
-                StartPoseWorker();
+                if (!StartDetectionWorker())
+                {
+                    capImg = false;
+                    capImgComplete = true;
+                    return;
+                }
+
                 cam.BeginAcquisition();
                 backgroundWorker1.RunWorkerAsync();
 
@@ -335,374 +321,63 @@ namespace CSharp_Bumblebee
             }
         }
 
-        private void backgroundWorker1_DoWork(object sender, DoWorkEventArgs e)
+        private Rectangle ClampRect(Rectangle r, int width, int height)
         {
-            IManagedImageList imageList = new ManagedImageList();
-            IManagedImage rectifiedImg = new ManagedImage();
-            IManagedImage disparityImg = new ManagedImage();
-            Stopwatch sw = new Stopwatch();
+            int left = Math.Max(0, r.Left);
+            int top = Math.Max(0, r.Top);
+            int right = Math.Min(width, r.Right);
+            int bottom = Math.Min(height, r.Bottom);
 
-            try
-            {
-                while (capImg)
-                {
-                    sw.Restart();
-                    imageList = cam.GetNextImageSync(3000);
-                    sw.Stop();
-                    SetCaptureMs(sw.Elapsed.TotalMilliseconds);
-
-                    IManagedImage ro = imageList.GetByPayloadType(
-                        ImagePayloadType.IMAGE_PAYLOAD_TYPE_RECTIFIED_SENSOR1);
-                    IManagedImage d = imageList.GetByPayloadType(
-                        ImagePayloadType.IMAGE_PAYLOAD_TYPE_DISPARITY_SENSOR1);
-
-                    if (ro == null || d == null || ro.IsIncomplete || d.IsIncomplete)
-                    {
-                        imageList.Release();
-                        continue;
-                    }
-
-                    sw.Restart();
-                    rectifiedImg.DeepCopy(ro);
-                    disparityImg.DeepCopy(d);
-                    ro.Dispose();
-                    d.Dispose();
-                    imageList.Release();
-                    sw.Stop();
-                    SetCopyMs(sw.Elapsed.TotalMilliseconds);
-
-                    int w = (int)rectifiedImg.Width;
-                    int h = (int)rectifiedImg.Height;
-
-                    using (Mat bgr = new Mat())
-                    using (Mat rgb = new Mat(h, w, DepthType.Cv8U, 3, rectifiedImg.DataPtr, 0))
-                    {
-                        sw.Restart();
-                        CvInvoke.CvtColor(rgb, bgr, ColorConversion.Rgb2Bgr);
-                        sw.Stop();
-                        SetConvertMs(sw.Elapsed.TotalMilliseconds);
-
-                        if ((poseFrameCounter % PoseSourceInterval) == 0)
-                        {
-                            sw.Restart();
-                            QueuePoseFrame(bgr);
-                            sw.Stop();
-                            SetPosePrepMs(sw.Elapsed.TotalMilliseconds);
-                        }
-
-                        unsafe
-                        {
-                            sw.Restart();
-                            DrawCachedPoseAndDistance(
-                                (ushort*)disparityImg.NativeData,
-                                bgr);
-                            sw.Stop();
-                            SetDistanceRenderMs(sw.Elapsed.TotalMilliseconds);
-                        }
-
-                        poseFrameCounter++;
-
-                        sw.Restart();
-                        QueueDisplayFrame(bgr);
-                        sw.Stop();
-                        SetBitmapQueueMs(sw.Elapsed.TotalMilliseconds);
-                    }
-                }
-            }
-            finally
-            {
-                StopPoseWorker();
-                rectifiedImg.Dispose();
-                disparityImg.Dispose();
-                distanceTracks.Clear();
-                capImgComplete = true;
-
-                BeginInvoke(new Action(() =>
-                {
-                    try
-                    {
-                        cam.EndAcquisition();
-                    }
-                    catch
-                    {
-                    }
-
-                    startBtn.Text = "開始取像";
-                    startBtn.Enabled = true;
-                    connectBtn.Enabled = true;
-                    started = false;
-                }));
-            }
+            return right > left && bottom > top
+                ? Rectangle.FromLTRB(left, top, right, bottom)
+                : Rectangle.Empty;
         }
 
-        private Mat Letterbox(Mat src, out float scale, out int padX, out int padY)
+        private Point GetDetectionCenter(Rectangle box, int imageWidth, int imageHeight)
         {
-            scale = Math.Min(YoloSize / (float)src.Width, YoloSize / (float)src.Height);
-            int nw = (int)Math.Round(src.Width * scale);
-            int nh = (int)Math.Round(src.Height * scale);
-            padX = (YoloSize - nw) / 2;
-            padY = (YoloSize - nh) / 2;
+            Rectangle clipped = ClampRect(box, imageWidth, imageHeight);
+            if (clipped.IsEmpty)
+                return Point.Empty;
 
-            Mat dst = new Mat(YoloSize, YoloSize, DepthType.Cv8U, 3);
-            dst.SetTo(new MCvScalar(114, 114, 114));
+            // Chest/body-center sample point. It stays away from the floor/background
+            // and is more useful for disparity distance than the full box bottom half.
+            Point center = new Point(
+                clipped.X + clipped.Width / 2,
+                clipped.Y + (int)Math.Round(clipped.Height * 0.50));
 
-            using (Mat resized = new Mat())
-            {
-                CvInvoke.Resize(src, resized, new Size(nw, nh));
-                using (Mat roi = new Mat(dst, new Rectangle(padX, padY, nw, nh)))
-                    resized.CopyTo(roi);
-            }
-
-            return dst;
+            return new Point(
+                Math.Max(0, Math.Min(imageWidth - 1, center.X)),
+                Math.Max(0, Math.Min(imageHeight - 1, center.Y)));
         }
 
-        private unsafe void DetectPose(Net net, PoseWorkItem item)
-        {
-            using (Mat blob = DnnInvoke.BlobFromImage(
-                item.Input,
-                1.0 / 255.0,
-                new Size(YoloSize, YoloSize),
-                new MCvScalar(),
-                true,
-                false))
-            {
-                net.SetInput(blob);
-
-                Stopwatch forward = Stopwatch.StartNew();
-                Mat output = net.Forward();
-                forward.Stop();
-                SetInferenceMs(forward.Elapsed.TotalMilliseconds);
-
-                Stopwatch post = Stopwatch.StartNew();
-                List<PosePerson> selectedPeople = new List<PosePerson>();
-
-                using (output)
-                using (Mat reshaped = output.Reshape(1, PoseOutputChannels))
-                using (Mat transposed = new Mat())
-                {
-                    CvInvoke.Transpose(reshaped, transposed);
-
-                    List<PosePerson> people = new List<PosePerson>();
-                    List<Rectangle> boxes = new List<Rectangle>();
-                    List<float> scores = new List<float>();
-
-                    float* data = (float*)transposed.DataPointer.ToPointer();
-                    int rows = transposed.Rows;
-                    int cols = transposed.Cols;
-
-                    for (int i = 0; i < rows; i++, data += cols)
-                    {
-                        float score = data[4];
-                        if (score < ConfidenceThreshold)
-                            continue;
-
-                        float cx = (data[0] - item.PadX) / item.Scale;
-                        float cy = (data[1] - item.PadY) / item.Scale;
-                        float bw = data[2] / item.Scale;
-                        float bh = data[3] / item.Scale;
-
-                        Rectangle box = ClampRect(
-                            new Rectangle(
-                                (int)(cx - bw / 2),
-                                (int)(cy - bh / 2),
-                                (int)bw,
-                                (int)bh),
-                            item.SourceWidth,
-                            item.SourceHeight);
-
-                        if (box.IsEmpty)
-                            continue;
-
-                        PosePerson person = new PosePerson
-                        {
-                            Box = box,
-                            Keypoints = new PoseKeypoint[KeypointCount]
-                        };
-
-                        for (int k = 0; k < KeypointCount; k++)
-                        {
-                            int o = 5 + k * 3;
-                            person.Keypoints[k] = new PoseKeypoint
-                            {
-                                X = (data[o] - item.PadX) / item.Scale,
-                                Y = (data[o + 1] - item.PadY) / item.Scale,
-                                Confidence = data[o + 2]
-                            };
-                        }
-
-                        people.Add(person);
-                        boxes.Add(box);
-                        scores.Add(score);
-                    }
-
-                    if (people.Count > 0)
-                    {
-                        using (VectorOfRect bv = new VectorOfRect(boxes.ToArray()))
-                        using (VectorOfFloat sv = new VectorOfFloat(scores.ToArray()))
-                        using (VectorOfInt indices = new VectorOfInt())
-                        {
-                            DnnInvoke.NMSBoxes(
-                                bv,
-                                sv,
-                                ConfidenceThreshold,
-                                NmsThreshold,
-                                indices);
-
-                            foreach (int index in indices.ToArray())
-                                selectedPeople.Add(people[index]);
-                        }
-                    }
-                }
-
-                lock (poseResultLock)
-                {
-                    cachedPosePeople.Clear();
-                    cachedPosePeople.AddRange(selectedPeople);
-                }
-
-                post.Stop();
-                SetPosePostMs(post.Elapsed.TotalMilliseconds);
-            }
-        }
-
-        private unsafe void DrawCachedPoseAndDistance(ushort* disparityData, Mat mat)
+        private unsafe void DrawCachedDetectionAndDistance(
+            ushort* disparityData,
+            Mat mat)
         {
             AgeDistanceTracks();
-            List<PosePerson> posePeople = GetPoseSnapshot();
+            List<PersonDetection> detections = GetDetectionSnapshot();
 
-            foreach (PosePerson person in posePeople)
+            foreach (PersonDetection detection in detections)
             {
-                DrawSkeleton(mat, person.Keypoints);
+                Point center = GetDetectionCenter(
+                    detection.Box,
+                    mat.Width,
+                    mat.Height);
 
-                Point center = GetTorsoCenter(person, mat.Width, mat.Height);
+                if (center == Point.Empty)
+                    continue;
+
                 double rawDistance = ComputeZvalue(
                     center,
-                    person.Box,
+                    detection.Box,
                     disparityData,
                     mat.Width,
                     mat.Height);
-                double displayDistance = UpdateSmoothedDistance(center, rawDistance);
 
-                CvInvoke.Circle(
-                    mat,
-                    center,
-                    circleSize + 1,
-                    new MCvScalar(0, 255, 255),
-                    -1);
-
-                if (displayDistance > 0)
-                {
-                    CvInvoke.PutText(
-                        mat,
-                        displayDistance.ToString("F2") + "m",
-                        new Point(center.X + 8, center.Y - 8),
-                        FontFace.HersheyTriplex,
-                        fontSize,
-                        new MCvScalar(255, 255, 255),
-                        fontThick);
-                }
+                UpdateSmoothedDistance(center, rawDistance);
             }
 
             RemoveExpiredDistanceTracks();
-        }
-
-        private Point GetTorsoCenter(PosePerson person, int imgWidth, int imgHeight)
-        {
-            PoseKeypoint lsP = person.Keypoints[5];
-            PoseKeypoint rsP = person.Keypoints[6];
-            PoseKeypoint lhP = person.Keypoints[11];
-            PoseKeypoint rhP = person.Keypoints[12];
-
-            bool ls = IsValidKeypoint(lsP, imgWidth, imgHeight);
-            bool rs = IsValidKeypoint(rsP, imgWidth, imgHeight);
-            bool lh = IsValidKeypoint(lhP, imgWidth, imgHeight);
-            bool rh = IsValidKeypoint(rhP, imgWidth, imgHeight);
-
-            if (ls && rs && lh && rh)
-            {
-                return ClampPoint(
-                    new Point(
-                        (int)Math.Round((lsP.X + rsP.X + lhP.X + rhP.X) / 4.0),
-                        (int)Math.Round((lsP.Y + rsP.Y + lhP.Y + rhP.Y) / 4.0)),
-                    imgWidth,
-                    imgHeight);
-            }
-
-            if (ls && rs)
-            {
-                return ClampPoint(
-                    new Point(
-                        (int)Math.Round((lsP.X + rsP.X) * .5f),
-                        (int)Math.Round((lsP.Y + rsP.Y) * .5f + person.Box.Height * .18f)),
-                    imgWidth,
-                    imgHeight);
-            }
-
-            return ClampPoint(
-                new Point(
-                    person.Box.X + person.Box.Width / 2,
-                    person.Box.Y + person.Box.Height / 2),
-                imgWidth,
-                imgHeight);
-        }
-
-        private Point ClampPoint(Point p, int w, int h)
-        {
-            return new Point(
-                Math.Max(0, Math.Min(w - 1, p.X)),
-                Math.Max(0, Math.Min(h - 1, p.Y)));
-        }
-
-        private void DrawSkeleton(Mat mat, PoseKeypoint[] keypoints)
-        {
-            for (int i = 0; i < SkeletonEdges.GetLength(0); i++)
-            {
-                PoseKeypoint a = keypoints[SkeletonEdges[i, 0]];
-                PoseKeypoint b = keypoints[SkeletonEdges[i, 1]];
-
-                if (IsValidKeypoint(a, mat.Width, mat.Height) &&
-                    IsValidKeypoint(b, mat.Width, mat.Height))
-                {
-                    CvInvoke.Line(
-                        mat,
-                        new Point((int)a.X, (int)a.Y),
-                        new Point((int)b.X, (int)b.Y),
-                        new MCvScalar(0, 255, 0),
-                        2);
-                }
-            }
-
-            foreach (PoseKeypoint p in keypoints)
-            {
-                if (IsValidKeypoint(p, mat.Width, mat.Height))
-                {
-                    CvInvoke.Circle(
-                        mat,
-                        new Point((int)p.X, (int)p.Y),
-                        circleSize,
-                        new MCvScalar(0, 255, 255),
-                        -1);
-                }
-            }
-        }
-
-        private bool IsValidKeypoint(PoseKeypoint p, int w, int h)
-        {
-            return p.Confidence >= KeypointThreshold &&
-                   p.X >= 0 && p.X < w &&
-                   p.Y >= 0 && p.Y < h;
-        }
-
-        private Rectangle ClampRect(Rectangle r, int width, int height)
-        {
-            int l = Math.Max(0, r.Left);
-            int t = Math.Max(0, r.Top);
-            int rr = Math.Min(width, r.Right);
-            int bb = Math.Min(height, r.Bottom);
-
-            return rr > l && bb > t
-                ? Rectangle.FromLTRB(l, t, rr, bb)
-                : Rectangle.Empty;
         }
 
         private unsafe double ComputeZvalue(
@@ -716,10 +391,14 @@ namespace CSharp_Bumblebee
             if (person.IsEmpty)
                 return 0;
 
-            int rw = Math.Max(12, (int)(person.Width * .22));
-            int rh = Math.Max(12, (int)(person.Height * .18));
+            int roiWidth = Math.Max(12, (int)(person.Width * .22));
+            int roiHeight = Math.Max(12, (int)(person.Height * .18));
             Rectangle roi = ClampRect(
-                new Rectangle(center.X - rw / 2, center.Y - rh / 2, rw, rh),
+                new Rectangle(
+                    center.X - roiWidth / 2,
+                    center.Y - roiHeight / 2,
+                    roiWidth,
+                    roiHeight),
                 imgWidth,
                 imgHeight);
 
@@ -739,15 +418,21 @@ namespace CSharp_Bumblebee
 
                     if (stereoCameraParameters.invalidDataFlag &&
                         Math.Abs(raw - stereoCameraParameters.invalidDataValue) < .5)
+                    {
+                        continue;
+                    }
+
+                    double disparity =
+                        raw * stereoCameraParameters.disparityScaleFactor +
+                        stereoCameraParameters.coordinateOffset;
+
+                    if (disparity <= 0)
                         continue;
 
-                    double disp = raw * stereoCameraParameters.disparityScaleFactor +
-                                  stereoCameraParameters.coordinateOffset;
-                    if (disp <= 0)
-                        continue;
-
-                    double distance = stereoCameraParameters.focalLength *
-                                      stereoCameraParameters.baseline / disp;
+                    double distance =
+                        stereoCameraParameters.focalLength *
+                        stereoCameraParameters.baseline /
+                        disparity;
 
                     if (distance > 0 && distance < 100000)
                         distances.Add(distance);
@@ -760,7 +445,8 @@ namespace CSharp_Bumblebee
         private double UpdateSmoothedDistance(Point center, double rawDistance)
         {
             DistanceTrack bestTrack = null;
-            double bestDistanceSquared = DistanceTrackMatchPixels * DistanceTrackMatchPixels;
+            double bestDistanceSquared =
+                DistanceTrackMatchPixels * DistanceTrackMatchPixels;
 
             foreach (DistanceTrack track in distanceTracks)
             {
@@ -769,11 +455,11 @@ namespace CSharp_Bumblebee
 
                 double dx = track.Center.X - center.X;
                 double dy = track.Center.Y - center.Y;
-                double ds = dx * dx + dy * dy;
+                double distanceSquared = dx * dx + dy * dy;
 
-                if (ds < bestDistanceSquared)
+                if (distanceSquared < bestDistanceSquared)
                 {
-                    bestDistanceSquared = ds;
+                    bestDistanceSquared = distanceSquared;
                     bestTrack = track;
                 }
             }
@@ -814,7 +500,8 @@ namespace CSharp_Bumblebee
                 : DistanceEmaAlpha;
 
             bestTrack.SmoothedDistance =
-                bestTrack.SmoothedDistance * (1 - alpha) + rawDistance * alpha;
+                bestTrack.SmoothedDistance * (1 - alpha) +
+                rawDistance * alpha;
 
             return bestTrack.SmoothedDistance;
         }
@@ -840,17 +527,17 @@ namespace CSharp_Bumblebee
                 return 0;
 
             values.Sort();
-            int m = values.Count / 2;
+            int middle = values.Count / 2;
 
             return values.Count % 2 == 0
-                ? (values[m - 1] + values[m]) * .5
-                : values[m];
+                ? (values[middle - 1] + values[middle]) * .5
+                : values[middle];
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
             capImg = false;
-            StopPoseWorker();
+            StopDetectionWorker();
             DisposePerformanceOverlay();
             DisposeFastDisplay();
 
@@ -874,12 +561,6 @@ namespace CSharp_Bumblebee
 
             cam?.Dispose();
         }
-
-        private void backgroundWorker1_RunWorkerCompleted(
-            object sender,
-            RunWorkerCompletedEventArgs e)
-        {
-        }
     }
 
     public class StereoCameraParameters
@@ -894,20 +575,13 @@ namespace CSharp_Bumblebee
         public float invalidDataValue;
     }
 
-    internal struct PoseKeypoint
+    internal sealed class PersonDetection
     {
-        public float X;
-        public float Y;
+        public Rectangle Box;
         public float Confidence;
     }
 
-    internal class PosePerson
-    {
-        public Rectangle Box;
-        public PoseKeypoint[] Keypoints;
-    }
-
-    internal class DistanceTrack
+    internal sealed class DistanceTrack
     {
         public int Id;
         public Point Center;
