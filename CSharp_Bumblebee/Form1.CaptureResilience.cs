@@ -87,7 +87,7 @@ namespace CSharp_Bumblebee
                         SetCopyMs(sw.Elapsed.TotalMilliseconds);
 
                         // Release camera-owned buffers immediately after DeepCopy so
-                        // pose inference and display never hold transport buffers.
+                        // detection inference and display never hold transport buffers.
                         SafeDisposeImage(ref rectifiedSource);
                         SafeDisposeImage(ref disparitySource);
                         SafeReleaseImageList(ref imageList);
@@ -110,27 +110,27 @@ namespace CSharp_Bumblebee
                             sw.Stop();
                             SetConvertMs(sw.Elapsed.TotalMilliseconds);
 
-                            if ((poseFrameCounter % PoseSourceInterval) == 0)
+                            if ((cameraFrameCounter % DetectionSourceInterval) == 0)
                             {
-                                SetCaptureStage("PoseQueue");
+                                SetCaptureStage("DetectionQueue");
                                 sw.Restart();
-                                QueuePoseFrame(bgr);
+                                QueueDetectionFrame(bgr);
                                 sw.Stop();
-                                SetPosePrepMs(sw.Elapsed.TotalMilliseconds);
+                                SetDetectionPrepMs(sw.Elapsed.TotalMilliseconds);
                             }
 
-                            SetCaptureStage("DistanceDraw");
+                            SetCaptureStage("Distance");
                             unsafe
                             {
                                 sw.Restart();
-                                DrawCachedPoseAndDistance(
+                                DrawCachedDetectionAndDistance(
                                     (ushort*)disparityImg.NativeData,
                                     bgr);
                                 sw.Stop();
                                 SetDistanceRenderMs(sw.Elapsed.TotalMilliseconds);
                             }
 
-                            poseFrameCounter++;
+                            cameraFrameCounter++;
 
                             SetCaptureStage("DisplayQueue");
                             sw.Restart();
@@ -166,10 +166,9 @@ namespace CSharp_Bumblebee
 
                         if (transportError)
                         {
-                            // Do not stop acquisition for GetNextImageSync timeout,
-                            // incomplete stereo transport, or transient copy failure.
-                            // A short capped backoff prevents a hard disconnect from
-                            // turning into a tight CPU loop.
+                            // GetNextImageSync timeout, incomplete transport, and
+                            // transient copy errors never stop acquisition. Skip the
+                            // bad synchronized set and continue with a short backoff.
                             int delayMs = Math.Min(
                                 100,
                                 10 * Math.Max(1, consecutiveTransportErrors));
@@ -204,7 +203,7 @@ namespace CSharp_Bumblebee
             finally
             {
                 SetCaptureStage("Stopping");
-                StopPoseWorker();
+                StopDetectionWorker();
                 rectifiedImg.Dispose();
                 disparityImg.Dispose();
                 distanceTracks.Clear();
@@ -318,8 +317,8 @@ namespace CSharp_Bumblebee
                 captureLastErrorMessage = message;
             }
 
-            // File logging is intentionally disabled for the exhibition build.
-            // Keep only lightweight in-memory diagnostics for the F3 overlay.
+            // File logging is intentionally disabled. Keep only lightweight
+            // in-memory diagnostics for the F3 overlay.
         }
 
         private static bool IsCaptureTransportStage(string stage)
