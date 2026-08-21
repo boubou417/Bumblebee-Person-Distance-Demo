@@ -17,9 +17,17 @@ namespace CSharp_Bumblebee
         // synchronized-image timeouts. GigE tuning is handled separately.
         private const int CaptureMaxConsecutiveFrameErrors = 20;
 
+        // Refresh the Bumblebee acquisition session once per hour during a long-running
+        // exhibition. Only EndAcquisition/BeginAcquisition are cycled; the camera stays
+        // initialized and the pose/display workers remain alive.
+        private static readonly TimeSpan AcquisitionRestartInterval =
+            TimeSpan.FromHours(1);
+        private const int AcquisitionRestartPauseMs = 150;
+
         private readonly object captureDiagnosticsLock = new object();
         private int captureRecoverableErrorCount;
         private int captureIncompleteFrameCount;
+        private int acquisitionRestartCount;
         private string captureCurrentStage = "Idle";
         private string captureLastErrorStage = "None";
         private string captureLastErrorMessage = "None";
@@ -31,6 +39,7 @@ namespace CSharp_Bumblebee
             IManagedImage rectifiedImg = new ManagedImage();
             IManagedImage disparityImg = new ManagedImage();
             Stopwatch sw = new Stopwatch();
+            Stopwatch acquisitionSessionClock = Stopwatch.StartNew();
 
             int consecutiveTransportErrors = 0;
             int consecutiveFrameErrors = 0;
@@ -50,6 +59,21 @@ namespace CSharp_Bumblebee
 
                     try
                     {
+                        // Restart only between frames, when no camera-owned image list
+                        // or payload is being held by this worker.
+                        if (acquisitionSessionClock.Elapsed >= AcquisitionRestartInterval)
+                        {
+                            RestartAcquisitionSession();
+
+                            if (!capImg)
+                                break;
+
+                            acquisitionSessionClock.Restart();
+                            Interlocked.Increment(ref acquisitionRestartCount);
+                            consecutiveTransportErrors = 0;
+                            consecutiveFrameErrors = 0;
+                        }
+
                         SetCaptureStage("Capture");
                         sw.Restart();
                         imageList = cam.GetNextImageSync(3000);
@@ -167,9 +191,9 @@ namespace CSharp_Bumblebee
                         if (transportError)
                         {
                             // Do not stop acquisition for GetNextImageSync timeout,
-                            // incomplete stereo transport, or transient copy failure.
-                            // A short capped backoff prevents a hard disconnect from
-                            // turning into a tight CPU loop.
+                            // incomplete stereo transport, transient copy failure, or
+                            // a failed hourly acquisition restart. The next iteration
+                            // retries automatically.
                             int delayMs = Math.Min(
                                 100,
                                 10 * Math.Max(1, consecutiveTransportErrors));
@@ -203,6 +227,7 @@ namespace CSharp_Bumblebee
             }
             finally
             {
+                acquisitionSessionClock.Stop();
                 SetCaptureStage("Stopping");
                 StopPoseWorker();
                 rectifiedImg.Dispose();
@@ -243,6 +268,35 @@ namespace CSharp_Bumblebee
             }
         }
 
+        private void RestartAcquisitionSession()
+        {
+            SetCaptureStage("AcquisitionRestart.End");
+
+            try
+            {
+                cam.EndAcquisition();
+            }
+            catch (Exception endEx)
+            {
+                // Still try BeginAcquisition below. This also covers the case where a
+                // previous restart attempt already ended acquisition but its Begin failed.
+                RecordCaptureException("AcquisitionRestart.End", endEx, -1);
+            }
+
+            if (!capImg)
+                return;
+
+            if (AcquisitionRestartPauseMs > 0)
+                Thread.Sleep(AcquisitionRestartPauseMs);
+
+            if (!capImg)
+                return;
+
+            SetCaptureStage("AcquisitionRestart.Begin");
+            cam.BeginAcquisition();
+            SetCaptureStage("Running");
+        }
+
         private void backgroundWorker1_RunWorkerCompleted_Resilient(
             object sender,
             RunWorkerCompletedEventArgs e)
@@ -280,6 +334,7 @@ namespace CSharp_Bumblebee
         {
             Interlocked.Exchange(ref captureRecoverableErrorCount, 0);
             Interlocked.Exchange(ref captureIncompleteFrameCount, 0);
+            Interlocked.Exchange(ref acquisitionRestartCount, 0);
 
             lock (captureDiagnosticsLock)
             {
@@ -326,7 +381,9 @@ namespace CSharp_Bumblebee
         {
             return string.Equals(stage, "Capture", StringComparison.Ordinal) ||
                    string.Equals(stage, "Payload", StringComparison.Ordinal) ||
-                   string.Equals(stage, "Copy", StringComparison.Ordinal);
+                   string.Equals(stage, "Copy", StringComparison.Ordinal) ||
+                   (!string.IsNullOrEmpty(stage) &&
+                    stage.StartsWith("AcquisitionRestart", StringComparison.Ordinal));
         }
 
         private static void SafeDisposeImage(ref IManagedImage image)
@@ -367,6 +424,7 @@ namespace CSharp_Bumblebee
         {
             int errors = Volatile.Read(ref captureRecoverableErrorCount);
             int incomplete = Volatile.Read(ref captureIncompleteFrameCount);
+            int restarts = Volatile.Read(ref acquisitionRestartCount);
             string stage;
             string lastStage;
             string lastMessage;
@@ -384,6 +442,7 @@ namespace CSharp_Bumblebee
             return "CaptureStage: " + stage + Environment.NewLine +
                    "CaptureErr  : " + errors + Environment.NewLine +
                    "Incomplete  : " + incomplete + Environment.NewLine +
+                   "AcqRestart  : " + restarts + Environment.NewLine +
                    "LastErr     : " + lastStage +
                    (errors > 0 ? " / " + lastMessage : string.Empty);
         }
